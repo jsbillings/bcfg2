@@ -147,6 +147,14 @@ class YUMng(Bcfg2.Client.Tools.PkgTool):
 
     def __init__(self, logger, setup, config):
         self.yb = yum.YumBase()
+
+        if setup['debug']:
+            self.yb.preconf.debuglevel = 3
+        elif setup['verbose']:
+            self.yb.preconf.debuglevel = 2
+        else:
+            self.yb.preconf.debuglevel = 1
+        
         Bcfg2.Client.Tools.PkgTool.__init__(self, logger, setup, config)
         self.ignores = [entry.get('name') for struct in config \
                         for entry in struct \
@@ -488,9 +496,10 @@ class YUMng(Bcfg2.Client.Tools.PkgTool):
                 package_fail = True
                 stat['version_fail'] = True
                 # Just chose the first pkg for the error message
-                self.logger.info("  Wrong version installed.  "\
-                        "Want %s, but have %s" % (nevraString(nevra),
-                                                  nevraString(POs[0])))
+                self.logger.info("  %s: Wrong version installed.  "
+                                 "Want %s, but have %s" % (entry.get("name"),
+                                                           nevraString(nevra),
+                                                           nevraString(POs[0])))
                 qtext_versions.append("U(%s)" % str(POs[0]))
                 continue
 
@@ -832,33 +841,38 @@ class YUMng(Bcfg2.Client.Tools.PkgTool):
 
             for inst in install_pkgs:
                 pkg_arg = self.instance_status[inst].get('pkg').get('name')
+                self.logger.debug("Installing %s" % pkg_arg)
                 try:
                     self.yb.install(**build_yname(pkg_arg, inst))
                 except yum.Errors.YumBaseError:
                     yume = sys.exc_info()[1]
-                    self.logger.error("Error installing some packages: %s" % yume)
+                    self.logger.error("Error installing package %s: %s" %
+                                      (pkg_arg, yume))
 
         if len(upgrade_pkgs) > 0:
             self.logger.info("Attempting to upgrade packages")
 
             for inst in upgrade_pkgs:
                 pkg_arg = self.instance_status[inst].get('pkg').get('name')
+                self.logger.debug("Upgrading %s" % pkg_arg)
                 try:
                     self.yb.update(**build_yname(pkg_arg, inst))
                 except yum.Errors.YumBaseError:
                     yume = sys.exc_info()[1]
-                    self.logger.error("Error upgrading some packages: %s" % yume)
+                    self.logger.error("Error upgrading package %s: %s" %
+                                      (pkg_arg, yume))
 
         if len(reinstall_pkgs) > 0:
             self.logger.info("Attempting to reinstall packages")
             for inst in reinstall_pkgs:
                 pkg_arg = self.instance_status[inst].get('pkg').get('name')
+                self.logger.debug("Reinstalling %s" % pkg_arg)
                 try:
                     self.yb.reinstall(**build_yname(pkg_arg, inst))
                 except yum.Errors.YumBaseError:
                     yume = sys.exc_info()[1]
-                    self.logger.error("Error upgrading some packages: %s" \
-                            % yume)
+                    self.logger.error("Error reinstalling package %s: %s" %
+                                      (pkg_arg, yume))
 
         self._runYumTransaction()
 

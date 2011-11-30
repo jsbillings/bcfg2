@@ -70,18 +70,16 @@ class PatternMap(object):
 
 
 class PatternFile(Bcfg2.Server.Plugin.SingleXMLFileBacked):
+    __identifier__ = None
+
     def __init__(self, filename, fam):
         Bcfg2.Server.Plugin.SingleXMLFileBacked.__init__(self, filename, fam)
         self.patterns = []
 
     def Index(self):
+        Bcfg2.Server.Plugin.SingleXMLFileBacked.Index(self)
         self.patterns = []
-        try:
-            parsed = lxml.etree.XML(self.data)
-        except:
-            Bcfg2.Server.Plugin.logger.error("Failed to read file %s" % self.name)
-            return
-        for entry in parsed.findall('GroupPattern'):
+        for entry in self.xdata.xpath('//GroupPattern'):
             try:
                 groups = [g.text for g in entry.findall('Group')]
                 for pat_ent in entry.findall('NamePattern'):
@@ -91,9 +89,8 @@ class PatternFile(Bcfg2.Server.Plugin.SingleXMLFileBacked):
                     rng = range_ent.text
                     self.patterns.append(PatternMap(None, rng, groups))
             except:
-                Bcfg2.Server.Plugin.logger.error(\
-                    "GroupPatterns: Failed to initialize pattern %s" % \
-                    (entry.get('pattern')))
+                self.logger.error("GroupPatterns: Failed to initialize pattern "
+                                  "%s" % entry.get('pattern'))
 
     def process_patterns(self, hostname):
         ret = []
@@ -103,9 +100,9 @@ class PatternFile(Bcfg2.Server.Plugin.SingleXMLFileBacked):
                 if gn is not None:
                     ret.extend(gn)
             except:
-                Bcfg2.Server.Plugin.logger.error(\
-                    "GroupPatterns: Failed to process pattern %s for %s" % \
-                    (pattern.pattern, hostname), exc_info=1)
+                self.logger.error("GroupPatterns: Failed to process pattern %s "
+                                  "for %s" % (pattern.pattern, hostname),
+                                  exc_info=1)
         return ret
 
 

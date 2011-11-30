@@ -365,7 +365,8 @@ class FileBacked(object):
             self.data = BUILTIN_FILE_TYPE(self.name).read()
             self.Index()
         except IOError:
-            logger.error("Failed to read file %s" % (self.name))
+            err = sys.exc_info()[1]
+            logger.error("Failed to read file %s: %s" % (self.name, err))
 
     def Index(self):
         """Update local data structures based on current file state"""
@@ -518,11 +519,10 @@ class DirectoryBacked(object):
             if ((event.filename[-1] == '~') or
                 (event.filename[:2] == '.#') or
                 (event.filename[-4:] == '.swp') or
-                (event.filename in ['SCCS', '.svn', '4913'])):
+                (event.filename in ['SCCS', '.svn', '4913']) or
+                (not self.patterns.match(event.filename))):
                 return
             if action in ['exists', 'created']:
-                if not self.patterns.match(event.filename):
-                    return
                 self.add_entry(relpath, event)
             elif action == 'changed':
                 if relpath in self.entries:
@@ -572,7 +572,38 @@ class SingleXMLFileBacked(XMLFileBacked):
     """This object is a coherent cache for an independent XML file."""
     def __init__(self, filename, fam):
         XMLFileBacked.__init__(self, filename)
-        fam.AddMonitor(filename, self)
+        self.extras = []
+        self.fam = fam
+        self.fam.AddMonitor(filename, self)
+
+    def Index(self):
+        """Build local data structures."""
+        try:
+            self.xdata = lxml.etree.XML(self.data, base_url=self.name)
+        except lxml.etree.XMLSyntaxError:
+            err = sys.exc_info()[1]
+            logger.error("Failed to parse %s: %s" % (self.name, err))
+            raise Bcfg2.Server.Plugin.PluginInitError
+
+        included = [ent.get('href')
+                    for ent in self.xdata.findall('./{http://www.w3.org/2001/XInclude}include')]
+        if included:
+            for name in included:
+                if name not in self.extras:
+                    self.fam.AddMonitor(os.path.join(os.path.dirname(self.name),
+                                                     name),
+                                        self)
+                    self.extras.append(name)
+            try:
+                self.xdata.getroottree().xinclude()
+            except lxml.etree.XIncludeError:
+                err = sys.exc_info()[1]
+                logger.error("XInclude failed on %s: %s" % (self.name, err))
+
+
+        self.entries = self.xdata.getchildren()
+        if self.__identifier__ is not None:
+            self.label = self.xdata.attrib[self.__identifier__]
 
 
 class StructFile(XMLFileBacked):
@@ -581,7 +612,6 @@ class StructFile(XMLFileBacked):
     
     def __init__(self, name):
         XMLFileBacked.__init__(self, name)
-        self.matches = {}
 
     def _match(self, item, metadata):
         """ recursive helper for Match() """
@@ -615,13 +645,10 @@ class StructFile(XMLFileBacked):
             
     def Match(self, metadata):
         """Return matching fragments of independent."""
-        if metadata.hostname not in self.matches:
-            rv = []
-            for child in self.entries:
-                rv.extend(self._match(child, metadata))
-            logger.debug("File %s got %d match(es)" % (self.name, len(rv)))
-            self.matches[metadata.hostname] = rv
-        return self.matches[metadata.hostname]
+        rv = []
+        for child in self.entries:
+            rv.extend(self._match(child, metadata))
+        return rv
 
 
 class INode:
@@ -789,10 +816,10 @@ class PrioDir(Plugin, Generator, XMLDirectoryBacked):
         
     def get_attrs(self, entry, metadata):
         """ get a list of attributes to add to the entry during the bind """
-        if False in [src.Cache(metadata)
-                     for src in list(self.entries.values())]:
-            self.logger.error("Called before data loaded")
-            raise PluginExecutionError
+        for src in list(self.entries.values()):
+            if src.Cache(metadata) == False:
+                self.logger.error("Called before data loaded")
+                raise PluginExecutionError
         matching = [src for src in list(self.entries.values())
                     if (src.cache and
                         entry.tag in src.cache[1] and
@@ -907,8 +934,28 @@ class EntrySet:
         self.specific = re.compile(pattern)
 
     def get_matching(self, metadata):
-        return [item for item in list(self.entries.values()) \
+        return [item for item in list(self.entries.values())
                 if item.specific.matches(metadata)]
+
+    def best_matching(self, metadata):
+        """ Return the appropriate interpreted template from the set of
+        available templates. """
+        matching = self.get_matching(metadata)
+
+        hspec = [ent for ent in matching if ent.specific.hostname]
+        if hspec:
+            return hspec[0]
+
+        gspec = [ent for ent in matching if ent.specific.group]
+        if gspec:
+            gspec.sort(self.group_sortfunc)
+            return gspec[-1]
+
+        aspec = [ent for ent in matching if ent.specific.all]
+        if aspec:
+            return aspec[0]
+
+        raise PluginExecutionError
 
     def handle_event(self, event):
         """Handle FAM events for the TemplateSet."""
@@ -1015,22 +1062,7 @@ class EntrySet:
     def bind_entry(self, entry, metadata):
         """Return the appropriate interpreted template from the set of available templates."""
         self.bind_info_to_entry(entry, metadata)
-        matching = self.get_matching(metadata)
-
-        hspec = [ent for ent in matching if ent.specific.hostname]
-        if hspec:
-            return hspec[0].bind_entry(entry, metadata)
-
-        gspec = [ent for ent in matching if ent.specific.group]
-        if gspec:
-            gspec.sort(self.group_sortfunc)
-            return gspec[-1].bind_entry(entry, metadata)
-
-        aspec = [ent for ent in matching if ent.specific.all]
-        if aspec:
-            return aspec[0].bind_entry(entry, metadata)
-
-        raise PluginExecutionError
+        return self.best_matching(metadata).bind_entry(entry, metadata)
 
 
 class GroupSpool(Plugin, Generator):

@@ -16,6 +16,7 @@ import logging
 import ssl
 import threading
 import time
+import types
 # Compatibility imports
 from Bcfg2.Bcfg2Py3k import xmlrpclib, SimpleXMLRPCServer, SocketServer
 
@@ -47,7 +48,7 @@ class XMLRPCDispatcher (SimpleXMLRPCServer.SimpleXMLRPCDispatcher):
                 params = (address, ) + params
             response = self.instance._dispatch(method, params, self.funcs)
             # py3k compatibility
-            if type(response) not in [bool, str, list, dict]:
+            if type(response) not in [bool, str, list, dict, types.NoneType]:
                 response = (response.decode('utf-8'), )
             else:
                 response = (response, )
@@ -288,21 +289,27 @@ class XMLRPCRequestHandler (SimpleXMLRPCServer.SimpleXMLRPCRequestHandler):
             except:
                 (type, msg) = sys.exc_info()[:2]
                 if str(type) == 'socket.error' and msg[0] == 32:
-                    self.logger.warning("Connection dropped from %s" % self.client_address[0])
+                    self.logger.warning("Connection dropped from %s" %
+                                        self.client_address[0])
                 elif str(type) == 'socket.error' and msg[0] == 104:
-                    self.logger.warning("Connection reset by peer: %s" % self.client_address[0])
+                    self.logger.warning("Connection reset by peer: %s" %
+                                        self.client_address[0])
                 elif str(type) == 'ssl.SSLError':
-                    self.logger.warning("SSLError handling client %s: %s" % \
-                        (self.client_address[0], msg))
+                    self.logger.warning("SSLError handling client %s: %s" %
+                                        (self.client_address[0], msg))
                 else:
-                    self.logger.error("Error sending response (%s): %s" % \
-                        (type, msg))
+                    self.logger.error("Error sending response (%s): %s" %
+                                      (type, msg))
 
     def finish(self):
         # shut down the connection
         if not self.wfile.closed:
-            self.wfile.flush()
-            self.wfile.close()
+            try:
+                self.wfile.flush()
+                self.wfile.close()
+            except socket.error:
+                err = sys.exc_info()[1]
+                self.logger.warning("Error closing connection: %s" % err)
         self.rfile.close()
 
 

@@ -12,6 +12,7 @@ import stat
 import sys
 import tempfile
 from subprocess import Popen, PIPE
+from Bcfg2.Bcfg2Py3k import u_str
 
 import Bcfg2.Server.Plugin
 
@@ -23,15 +24,14 @@ try:
 except:
     have_genshi = False
 
+try:
+    import Cheetah.Template
+    import Cheetah.Parser
+    have_cheetah = True
+except:
+    have_cheetah = False
+
 logger = logging.getLogger('Bcfg2.Plugins.Cfg')
-
-
-# py3k compatibility
-def u_str(string, encoding):
-    if sys.hexversion >= 0x03000000:
-        return string.encode(encoding)
-    else:
-        return unicode(string, encoding)
 
 
 # snipped from TGenshi
@@ -80,7 +80,7 @@ class CfgMatcher:
 
     def __init__(self, fname):
         name = re.escape(fname)
-        self.basefile_reg = re.compile('^(?P<basename>%s)(|\\.H_(?P<hostname>\S+?)|.G(?P<prio>\d+)_(?P<group>\S+?))(?P<genshi>\\.genshi)?$' % name)
+        self.basefile_reg = re.compile('^(?P<basename>%s)(|\\.H_(?P<hostname>\S+?)|.G(?P<prio>\d+)_(?P<group>\S+?))((?P<genshi>\\.genshi)|(?P<cheetah>\\.cheetah))?$' % name)
         self.delta_reg = re.compile('^(?P<basename>%s)(|\\.H_(?P<hostname>\S+)|\\.G(?P<prio>\d+)_(?P<group>\S+))\\.(?P<delta>(cat|diff))$' % name)
         self.cat_count = fname.count(".cat")
         self.diff_count = fname.count(".diff")
@@ -157,6 +157,25 @@ class CfgEntrySet(Bcfg2.Server.Plugin.EntrySet):
                 e = sys.exc_info()[1]
                 logger.error("Cfg: genshi exception: %s" % e)
                 raise Bcfg2.Server.Plugin.PluginExecutionError
+        elif basefile.name.endswith(".cheetah"):
+            if not have_cheetah:
+                logger.error("Cfg: Cheetah is not available")
+                raise Bcfg2.Server.Plugin.PluginExecutionError
+            try:
+                fname = entry.get('realname', entry.get('name'))
+                s = {'useStackFrames': False}
+                template = Cheetah.Template.Template(open(basefile.name).read(),
+                                                       compilerSettings=s)
+                template.metadata = metadata
+                template.path = fname
+                template.source_path = basefile.name
+                data = template.respond()
+                if data == '':
+                    entry.set('empty', 'true')
+            except Exception:
+                e = sys.exc_info()[1]
+                logger.error("Cfg: cheetah exception: %s" % e)
+                raise Bcfg2.Server.Plugin.PluginExecutionError
         else:
             data = basefile.data
             for delta in used:
@@ -196,7 +215,7 @@ class CfgEntrySet(Bcfg2.Server.Plugin.EntrySet):
         if specific.all:
             return bfname
         elif specific.group:
-            return "%s.G%d_%s" % (bfname, specific.prio, specific.group)
+            return "%s.G%02d_%s" % (bfname, specific.prio, specific.group)
         elif specific.hostname:
             return "%s.H_%s" % (bfname, specific.hostname)
 
@@ -205,6 +224,9 @@ class CfgEntrySet(Bcfg2.Server.Plugin.EntrySet):
             name = self.build_filename(specific)
             if os.path.exists("%s.genshi" % name):
                 logger.error("Cfg: Unable to pull data for genshi types")
+                raise Bcfg2.Server.Plugin.PluginExecutionError
+            elif os.path.exists("%s.cheetah" % name):
+                logger.error("Cfg: Unable to pull data for cheetah types")
                 raise Bcfg2.Server.Plugin.PluginExecutionError
             try:
                 etext = new_entry['text'].encode(self.encoding)

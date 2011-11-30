@@ -1,7 +1,7 @@
 import os.path
 import lxml.etree
 import Bcfg2.Server.Lint
-import Bcfg2.Server.Plugins.Packages
+from Bcfg2.Server.Plugins.Packages import Apt, Yum
 
 class RequiredAttrs(Bcfg2.Server.Lint.ServerPlugin):
     """ verify attributes for configuration entries (as defined in
@@ -10,41 +10,54 @@ class RequiredAttrs(Bcfg2.Server.Lint.ServerPlugin):
     def __init__(self, *args, **kwargs):
         Bcfg2.Server.Lint.ServerPlugin.__init__(self, *args, **kwargs)
         self.required_attrs = {
-            'device': ['name', 'owner', 'group', 'dev_type'],
-            'directory': ['name', 'owner', 'group', 'perms'],
-            'file': ['name', 'owner', 'group', 'perms'],
-            'hardlink': ['name', 'to'],
-            'symlink': ['name', 'to'],
-            'ignore': ['name'],
-            'nonexistent': ['name'],
-            'permissions': ['name', 'owner', 'group', 'perms'],
-            'vcs': ['vcstype', 'revision', 'sourceurl']}
+            'Path': {
+                'device': ['name', 'owner', 'group', 'dev_type'],
+                'directory': ['name', 'owner', 'group', 'perms'],
+                'file': ['name', 'owner', 'group', 'perms', '__text__'],
+                'hardlink': ['name', 'to'],
+                'symlink': ['name', 'to'],
+                'ignore': ['name'],
+                'nonexistent': ['name'],
+                'permissions': ['name', 'owner', 'group', 'perms'],
+                'vcs': ['vcstype', 'revision', 'sourceurl']},
+            'Service': {
+                'chkconfig': ['name'],
+                'deb': ['name'],
+                'rc-update': ['name'],
+                'smf': ['name', 'FMRI'],
+                'upstart': ['name']},
+            'Action': ['name', 'timing', 'when', 'status', 'command'],
+            'Package': ['name']}
 
     def Run(self):
-        self.check_rules()
-        self.check_bundles()
         self.check_packages()
+        if "Defaults" in self.core.plugins:
+            self.logger.info("Defaults plugin enabled; skipping required "
+                             "attribute checks")
+        else:
+            self.check_rules()
+            self.check_bundles()
 
     def check_packages(self):
         """ check package sources for Source entries with missing attrs """
         if 'Packages' in self.core.plugins:
             for source in self.core.plugins['Packages'].sources:
-                if isinstance(source, Bcfg2.Server.Plugins.Packages.PulpSource):
-                    if not source.id:
+                if isinstance(source, Yum.YumSource):
+                    if (not source.pulp_id and not source.url and
+                        not source.rawurl):
                         self.LintError("required-attrs-missing",
-                                       "The required attribute id is missing "
-                                       "from a Pulp source: %s" %
-                                       self.RenderXML(source.xsource))
-                else:
-                    if not source.url and not source.rawurl:
-                        self.LintError("required-attrs-missing",
-                                       "A %s source must have either a url or "
-                                       "rawurl attribute: %s" %
+                                       "A %s source must have either a url, "
+                                       "rawurl, or pulp_id attribute: %s" %
                                        (source.ptype,
                                         self.RenderXML(source.xsource)))
+                elif not source.url and not source.rawurl:
+                    self.LintError("required-attrs-missing",
+                                   "A %s source must have either a url or "
+                                   "rawurl attribute: %s" %
+                                   (source.ptype,
+                                    self.RenderXML(source.xsource)))
 
-                if (not isinstance(source,
-                                   Bcfg2.Server.Plugins.Packages.APTSource) and
+                if (not isinstance(source, Apt.AptSource) and
                     source.recommended):
                     self.LintError("extra-attrs",
                                    "The recommended attribute is not "
@@ -70,22 +83,34 @@ class RequiredAttrs(Bcfg2.Server.Lint.ServerPlugin):
                 except (lxml.etree.XMLSyntaxError, AttributeError):
                     xdata = lxml.etree.parse(bundle.template.filepath).getroot()
 
-                for path in xdata.xpath("//BoundPath"):
+                for path in xdata.xpath("//*[substring(name(), 1, 5) = 'Bound']"):
                     self.check_entry(path, bundle.name)
 
     def check_entry(self, entry, filename):
         """ generic entry check """
         if self.HandlesFile(filename):
-            pathname = entry.get('name')
-            pathtype = entry.get('type')
-            pathset = set(entry.attrib.keys())
-            try:
-                required_attrs = set(self.required_attrs[pathtype] + ['type'])
-            except KeyError:
-                self.LintError("unknown-path-type",
-                               "Unknown path type %s: %s" %
-                               (pathtype, self.RenderXML(entry)))
-                return
+            name = entry.get('name')
+            tag = entry.tag
+            if tag.startswith("Bound"):
+                tag = tag[5:]
+            if tag not in self.required_attrs:
+                self.LintError("unknown-entry-tag",
+                               "Unknown entry tag '%s': %s" %
+                               (entry.tag, self.RenderXML(entry)))
+
+            if isinstance(self.required_attrs[tag], dict):
+                etype = entry.get('type')
+                if etype in self.required_attrs[tag]:
+                    required_attrs = set(self.required_attrs[tag][etype] +
+                                         ['type'])
+                else:
+                    self.LintError("unknown-entry-type",
+                                   "Unknown %s type %s: %s" %
+                                   (tag, etype, self.RenderXML(entry)))
+                    return
+            else:
+                required_attrs = set(self.required_attrs[tag])
+            attrs = set(entry.attrib.keys())
 
             if 'dev_type' in required_attrs:
                 dev_type = entry.get('dev_type')
@@ -93,17 +118,21 @@ class RequiredAttrs(Bcfg2.Server.Lint.ServerPlugin):
                     # check if major/minor are specified
                     required_attrs |= set(['major', 'minor'])
 
-            if pathtype == 'file' and not entry.text:
-                self.LintError("required-attrs-missing",
-                               "Text missing for %s %s in %s: %s" %
-                               (entry.tag, pathname, filename,
-                                self.RenderXML(entry)))
+            if '__text__' in required_attrs:
+                required_attrs.remove('__text__')
+                if (not entry.text and
+                    not entry.get('empty', 'false').lower() == 'true'):
+                    self.LintError("required-attrs-missing",
+                                   "Text missing for %s %s in %s: %s" %
+                                   (entry.tag, name, filename,
+                                    self.RenderXML(entry)))
 
-            if not pathset.issuperset(required_attrs):
+            if not attrs.issuperset(required_attrs):
                 self.LintError("required-attrs-missing",
-                               "The required attributes %s are missing for %s %sin %s:\n%s" %
-                               (",".join([attr
-                                          for attr in
-                                          required_attrs.difference(pathset)]),
-                                entry.tag, pathname, filename,
+                               "The following required attribute(s) are "
+                               "missing for %s %s in %s: %s\n%s" %
+                               (entry.tag, name, filename,
+                                ", ".join([attr
+                                           for attr in
+                                           required_attrs.difference(attrs)]),
                                 self.RenderXML(entry)))

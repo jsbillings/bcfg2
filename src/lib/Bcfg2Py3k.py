@@ -12,7 +12,7 @@ try:
     from urllib2 import HTTPPasswordMgrWithDefaultRealm
     from urllib2 import build_opener
     from urllib2 import install_opener
-    from urllib import urlopen
+    from urllib2 import urlopen
     from urllib2 import HTTPError
 except ImportError:
     from urllib.parse import urljoin, urlparse
@@ -63,11 +63,17 @@ except ImportError:
     import http.client as httplib
 
 # print to file compatibility
-def u_str(string):
+def u_str(string, encoding=None):
     if sys.hexversion >= 0x03000000:
-        return string
+        if encoding is not None:
+            return string.encode(encoding)
+        else:
+            return string
     else:
-        return unicode(string)
+        if encoding is not None:
+            return unicode(string, encoding)
+        else:
+            return unicode(string)
 
 """
 In order to use the new syntax for printing to a file, we need to do
@@ -79,3 +85,8 @@ if sys.hexversion >= 0x03000000:
 else:
     def fprint(s, f):
         print >> f, s
+
+if sys.hexversion >= 0x03000000:
+    from io import FileIO as file
+else:
+    file = file
