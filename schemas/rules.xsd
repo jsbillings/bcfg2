@@ -16,12 +16,17 @@
               schemaLocation="genshi.xsd"/>
 
   <xsd:complexType name='ActionType'>
-    <xsd:attribute type='ActionTimingEnum' name='timing' use='required'/>
-    <xsd:attribute type='ActionWhenEnum' name='when' use='required'/>
-    <xsd:attribute type='ActionStatusEnum' name='status' use='required'/>
-    <xsd:attribute type='xsd:string' name='name' use='required'/>
-    <xsd:attribute type='xsd:string' name='command' use='required'/>
+    <xsd:attribute type='ActionTimingEnum' name='timing'/>
+    <xsd:attribute type='ActionWhenEnum' name='when'/>
+    <xsd:attribute type='ActionStatusEnum' name='status'/>
+    <xsd:attribute type="xsd:boolean" name="build"/>
+    <xsd:attribute type='xsd:string' name='name'/>
+    <xsd:attribute type='xsd:string' name='command'/>
     <xsd:attributeGroup ref="py:genshiAttrs"/>
+  </xsd:complexType>
+
+  <xsd:complexType name='PostInstallType'>
+    <xsd:attribute type='xsd:string' name='name' use='required'/>
   </xsd:complexType>
 
   <xsd:complexType name='PathType'>
@@ -34,8 +39,12 @@
     <xsd:attribute type='xsd:string' name='perms'/>
     <xsd:attribute type='xsd:string' name='owner'/>
     <xsd:attribute type='xsd:string' name='group'/>
+    <xsd:attribute type='xsd:string' name='recursive'/>
     <xsd:attribute type='xsd:string' name='prune'/>
     <xsd:attribute type='xsd:string' name='to'/>
+    <xsd:attribute type='xsd:string' name='vcstype'/>
+    <xsd:attribute type='xsd:string' name='revision'/>
+    <xsd:attribute type='xsd:string' name='sourceurl'/>
     <xsd:attributeGroup ref="py:genshiAttrs"/>
   </xsd:complexType>
 
@@ -68,6 +77,7 @@
         <xsd:element name='Package' type='PackageType'/>
         <xsd:element name='Path' type='PathType'/>
         <xsd:element name='Action' type='ActionType'/>
+        <xsd:element name='PostInstall' type='PostInstallType'/>
         <xsd:element name='Group' type='RContainerType'/>
         <xsd:element name='Client' type='RContainerType'/>
         <xsd:element ref="py:def"/>

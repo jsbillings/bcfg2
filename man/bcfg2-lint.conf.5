@@ -21,11 +21,21 @@ a comment, a section name or an option.
 Any line beginning with a hash (#) is ignored, as are lines containing
 only whitespace.
 
+The file consists of one
+.I [lint]
+section, up to one
+.I [errors]
+section, and then any number of plugin-specific sections, documented below.  (Note that this makes it quite feasible to combine your
+.B bcfg2-lint.conf
+into your 
+.B bcfg2.conf(5)
+file, if you so desire.)
+
 .SH GLOBAL OPTIONS
 These options apply to
 .I bcfg2-lint
 generally, and must be in the
-.I [main]
+.I [lint]
 section.
 
 .TP
@@ -33,8 +43,26 @@ section.
 A comma-delimited list of plugins to run.  By default, all plugins are
 run.  This can be overridden by listing plugins on the command line.
 See
-.B bcfg2-lint(1)
+.B bcfg2-lint(8)
 for a list of the available plugins.
+
+.SH ERROR HANDLING
+Error handling is configured in the
+.I [errors]
+section.  Each option should be the name of an error and one of
+.I "error"
+,
+.I "warning"
+, or
+.I "silent"
+, which tells
+.B bcfg2-lint(8)
+how to handle the warning.  Error names and their defaults can be
+displayed by running
+.B bcfg2-lint(8)
+with the
+.B --list-errors
+option.
 
 .SH PLUGIN OPTIONS
 
@@ -45,6 +73,11 @@ plugin would be in a section called
 .
 
 If a plugin is not listed below, then it has no configuration.
+
+In many cases, the behavior of a plugin can be configured by modifying
+how errors from it are handled.  See
+.B ERROR HANDLING
+, above.
 
 .TP
 .BR Comments
@@ -118,17 +151,13 @@ A comma-delimited list of attributes to require on
 .I <Info>
 tags.  Default is "owner,group,perms".
 
-\(bu
-.B require_paranoid
-Ensure that paranoid mode is on for all files.  This can be
-accomplished by either setting the global paranoid value (and not
-overriding it.  Default is false.
+.TP
+.BR MergeFiles
 
 \(bu
-.B require
-Require an
-.I info.xml
-file for all Cfg files.  Default is false.
+.B threshold
+The threshold at which MergeFiles will suggest merging config files
+and probes.  Default is 75% similar.
 
 .TP
 .BR Validate
@@ -140,16 +169,6 @@ The full path to the XML Schema files.  Default is
 .I --schema
 command-line option
 
-\(bu
-.B properties_schema
-If set to
-.I "warn"
-, will warn if a property files does not have a matching schema file.
-If set to
-.I "require"
-, will produce an error if a property files does not have a matching
-schema file.  Default is to neither warn nor require.
-
 .SH SEE ALSO
-.BR bcfg2-lint(1)
+.BR bcfg2-lint(8)
 

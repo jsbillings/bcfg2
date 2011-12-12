@@ -13,7 +13,7 @@
 %define lxmldep %(rpm -q %{alt_lxml} 2>&1 > /dev/null && echo %{alt_lxml} || echo %{dfl_lxml})
 
 Name:             bcfg2
-Version:          1.2.0pre1
+Version:          1.2.0
 Release:          %{release}
 Summary:          Configuration management system
 
@@ -30,7 +30,7 @@ BuildRequires:    %{lxmldep}
 
 # %{rhel} wasn't set before rhel 6.  so this checks for old RHEL
 # %systems (and potentially very old Fedora systems, too)
-%if "%{_vendor}" == "redhat" && 0%{?rhel} < 6
+%if "%{_vendor}" == "redhat" && 0%{?rhel} <= 6 && 0%{?fedora} == 0
 BuildRequires: python-sphinx10
 # the python-sphinx10 package doesn't set sys.path correctly, so we
 # have to do it for them
@@ -189,6 +189,8 @@ mv build/dtd %{buildroot}%{_defaultdocdir}/bcfg2-doc-%{version}/
 %{__install} -d %{buildroot}%{apache_conf}/conf.d
 %{__install} -m 644 misc/apache/bcfg2.conf %{buildroot}%{apache_conf}/conf.d/wsgi_bcfg2.conf
 
+%{__mkdir_p} %{buildroot}%{_localstatedir}/cache/bcfg2
+
 %clean
 [ "%{buildroot}" != "/" ] && %{__rm} -rf %{buildroot} || exit 2
 
@@ -204,6 +206,7 @@ mv build/dtd %{buildroot}%{_defaultdocdir}/bcfg2-doc-%{version}/
 %{_sysconfdir}/cron.hourly/bcfg2
 %{_sysconfdir}/cron.daily/bcfg2
 %{_prefix}/lib/bcfg2/bcfg2-cron
+%{_localstatedir}/cache/bcfg2
 
 %post -n bcfg2-server
 /sbin/chkconfig --add bcfg2-server
@@ -232,6 +235,7 @@ mv build/dtd %{buildroot}%{_defaultdocdir}/bcfg2-doc-%{version}/
 %{_sbindir}/bcfg2-repo-validate
 %{_sbindir}/bcfg2-reports
 %{_sbindir}/bcfg2-server
+%{_sbindir}/bcfg2-yum-helper
 
 %{_mandir}/man5/bcfg2-lint.conf.5*
 %{_mandir}/man8/*.8*

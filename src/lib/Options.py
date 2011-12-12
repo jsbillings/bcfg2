@@ -1,11 +1,12 @@
 """Option parsing library for utilities."""
 __revision__ = '$Revision$'
 
-import ConfigParser
 import getopt
 import os
 import sys
 import Bcfg2.Client.Tools
+# Compatibility imports
+from Bcfg2.Bcfg2Py3k import ConfigParser
 
 def bool_cook(x):
     if x:
@@ -146,7 +147,8 @@ class OptionSet(dict):
             try:
                 opts, args = getopt.getopt(argv, self.buildGetopt(),
                                            self.buildLongGetopt())
-            except getopt.GetoptError, err:
+            except getopt.GetoptError:
+                err = sys.exc_info()[1]
                 self.helpExit(err)
             if '-h' in argv:
                 self.helpExit('', 0)
@@ -171,6 +173,18 @@ def colon_split(c_string):
         return c_string.split(':')
     return []
 
+def get_bool(s):
+    # these values copied from ConfigParser.RawConfigParser.getboolean
+    # with the addition of True and False
+    truelist = ["1", "yes", "True", "true", "on"]
+    falselist = ["0", "no", "False", "false", "off"]
+    if s in truelist:
+        return True
+    elif s in falselist:
+        return False
+    else:
+        raise ValueError
+
 # General options
 CFILE = Option('Specify configuration file', DEFAULT_CONFIG_LOCATION, cmd='-C',
                odesc='<conffile>')
@@ -187,10 +201,13 @@ INSTALL_PREFIX = Option('Installation location', cf=('server', 'prefix'),
                         default=DEFAULT_INSTALL_PREFIX, odesc='</path>')
 SENDMAIL_PATH = Option('Path to sendmail', cf=('reports', 'sendmailpath'),
                        default='/usr/lib/sendmail')
-INTERACTIVE = Option('Prompt the user for each change', default=False,
+INTERACTIVE = Option('Run interactively, prompting the user for each change',
+                     default=False,
                      cmd='-I', )
-ENCODING = Option('Encoding of cfg files', default=sys.getdefaultencoding(),
-                  cmd='-E', odesc='<encoding>',
+ENCODING = Option('Encoding of cfg files',
+                  default='UTF-8',
+                  cmd='-E',
+                  odesc='<encoding>',
                   cf=('components', 'encoding'))
 PARANOID_PATH = Option('Specify path for paranoid file backups',
                        default='/var/cache/bcfg2', cf=('paranoid', 'path'),
@@ -226,6 +243,9 @@ MDATA_PERMS = Option('Default Path permissions',
 MDATA_PARANOID = Option('Default Path paranoid setting',
                      'false', cf=('mdata', 'paranoid'),
                      odesc='Path paranoid setting')
+MDATA_SENSITIVE = Option('Default Path sensitive setting',
+                     'false', cf=('mdata', 'sensitive'),
+                     odesc='Path sensitive setting')
 
 # Server options
 SERVER_REPOSITORY = Option('Server repository path', '/var/lib/bcfg2',
@@ -234,7 +254,6 @@ SERVER_REPOSITORY = Option('Server repository path', '/var/lib/bcfg2',
 SERVER_PLUGINS = Option('Server plugin list', cf=('server', 'plugins'),
                         # default server plugins
                         default=[
-                                 'Base',
                                  'Bundler',
                                  'Cfg',
                                  'Metadata',
@@ -247,6 +266,13 @@ SERVER_MCONNECT = Option('Server Metadata Connector list', cook=list_split,
                          cf=('server', 'connectors'), default=['Probes'], )
 SERVER_FILEMONITOR = Option('Server file monitor', cf=('server', 'filemonitor'),
                             default='default', odesc='File monitoring driver')
+SERVER_LISTEN_ALL = Option('Listen on all interfaces',
+                           cf=('server', 'listen_all'),
+                           cmd='--listen-all',
+                           default=False,
+                           long_arg=True,
+                           cook=get_bool,
+                           odesc='True|False')
 SERVER_LOCATION = Option('Server Location', cf=('components', 'bcfg2'),
                          default='https://localhost:6789', cmd='-S',
                          odesc='https://server:port')
@@ -287,7 +313,10 @@ CLIENT_DRYRUN = Option('Do not actually change the system',
 CLIENT_EXTRA_DISPLAY = Option('enable extra entry output',
                               default=False, cmd='-e', )
 CLIENT_PARANOID = Option('Make automatic backups of config files',
-                         default=False, cmd='-P', cf=('client', 'paranoid'))
+                         default=False,
+                         cmd='-P',
+                         cook=get_bool,
+                         cf=('client', 'paranoid'))
 CLIENT_DRIVERS = Option('Specify tool driver set', cmd='-D',
                         cf=('client', 'drivers'),
                         odesc="<driver1,driver2>", cook=list_split,
@@ -300,12 +329,13 @@ CLIENT_BUNDLE = Option('Only configure the given bundle(s)', default=[],
                        cmd='-b', odesc='<bundle:bundle>', cook=colon_split)
 CLIENT_BUNDLEQUICK = Option('only verify/configure the given bundle(s)', default=False,
                        cmd='-Q')
-CLIENT_INDEP = Option('Only configure the given bundle(s)', default=False,
+CLIENT_INDEP = Option('Only configure independent entries, ignore bundles', default=False,
                        cmd='-z')
 CLIENT_KEVLAR = Option('Run in kevlar (bulletproof) mode', default=False,
                        cmd='-k', )
-CLIENT_DLIST = Option('Run client in server decision list mode', default=False,
-                      cmd='-l', odesc='<whitelist|blacklist>')
+CLIENT_DLIST = Option('Run client in server decision list mode', default='none',
+                      cf=('client', 'decision'),
+                      cmd='-l', odesc='<whitelist|blacklist|none>')
 CLIENT_FILE = Option('Configure from a file rather than querying the server',
                      default=False, cmd='-f', odesc='<specification path>')
 CLIENT_QUICK = Option('Disable some checksum verification', default=False,
@@ -314,6 +344,9 @@ CLIENT_USER = Option('The user to provide for authentication', default='root',
                      cmd='-u', cf=('communication', 'user'), odesc='<user>')
 CLIENT_SERVICE_MODE = Option('Set client service mode', default='default',
                              cmd='-s', odesc='<default|disabled|build>')
+CLIENT_TIMEOUT = Option('Set the client XML-RPC timeout', default=90,
+                        cmd='-t', cf=('communication', 'timeout'),
+                        odesc='<timeout>')
                      
 # APT client tool options
 CLIENT_APT_TOOLS_INSTALL_PATH = Option('Apt tools install path',

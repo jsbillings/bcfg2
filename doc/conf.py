@@ -40,8 +40,13 @@ source_suffix = '.txt'
 master_doc = 'index'
 
 # General information about the project.
-project = u'Bcfg2'
-copyright = u'2009-%s, Narayan Desai' % time.strftime('%Y')
+# py3k compatibility
+if sys.hexversion >= 0x03000000:
+    project = 'Bcfg2'
+    copyright = '2009-%s, Narayan Desai' % time.strftime('%Y')
+else:
+    project = u'Bcfg2'
+    copyright = u'2009-%s, Narayan Desai' % time.strftime('%Y')
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
@@ -118,7 +123,7 @@ html_theme = 'default'
 # The name of an image file (within the static path) to use as favicon of the
 # docs.  This file should be a Windows icon file (.ico) being 16x16 or 32x32
 # pixels large.
-#html_favicon = None
+html_favicon = 'favicon.ico'
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
@@ -174,10 +179,17 @@ latex_font_size = '11pt'
 
 # Grouping the document tree into LaTeX files. List of tuples
 # (source start file, target name, title, author, documentclass [howto/manual]).
-latex_documents = [
-  ('contents', 'bcfg2.tex', u'Bcfg2 Documentation',
-   u'Narayan Desai et al.', 'manual', True),
-]
+# py3k compatibility
+if sys.hexversion >= 0x03000000:
+    latex_documents = [
+      ('contents', 'bcfg2.tex', 'Bcfg2 Documentation',
+       'Narayan Desai et al.', 'manual', True),
+    ]
+else:
+    latex_documents = [
+      ('contents', 'bcfg2.tex', u'Bcfg2 Documentation',
+       u'Narayan Desai et al.', 'manual', True),
+    ]
 
 # The name of an image file (relative to this directory) to place at the top of
 # the title page.

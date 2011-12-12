@@ -2,17 +2,82 @@
 __revision__ = '$Revision$'
 
 import binascii
+import re
 import os
 import socket
 import shutil
+import sys
 import tempfile
 from subprocess import Popen, PIPE
 import Bcfg2.Server.Plugin
+from Bcfg2.Bcfg2Py3k import u_str
+
+if sys.hexversion >= 0x03000000:
+    from functools import reduce
+
+import logging
+logger = logging.getLogger(__name__)
+
+class KeyData(Bcfg2.Server.Plugin.SpecificData):
+    def __init__(self, name, specific, encoding):
+        Bcfg2.Server.Plugin.SpecificData.__init__(self, name, specific,
+                                                  encoding)
+        self.encoding = encoding
+    
+    def bind_entry(self, entry, metadata):
+        entry.set('type', 'file')
+        if entry.get('encoding') == 'base64':
+            entry.text = binascii.b2a_base64(self.data)
+        else:
+            try:
+                entry.text = u_str(self.data, self.encoding)
+            except UnicodeDecodeError:
+                e = sys.exc_info()[1]
+                logger.error("Failed to decode %s: %s" % (entry.get('name'), e))
+                logger.error("Please verify you are using the proper encoding.")
+                raise Bcfg2.Server.Plugin.PluginExecutionError
+            except ValueError:
+                e = sys.exc_info()[1]
+                logger.error("Error in specification for %s" %
+                             entry.get('name'))
+                logger.error(str(e))
+                logger.error("You need to specify base64 encoding for %s." %
+                             entry.get('name'))
+                raise Bcfg2.Server.Plugin.PluginExecutionError
+        if entry.text in ['', None]:
+            entry.set('empty', 'true')
+
+class HostKeyEntrySet(Bcfg2.Server.Plugin.EntrySet):
+    def __init__(self, basename, path):
+        if basename.startswith("ssh_host_key"):
+            encoding = "base64"
+        else:
+            encoding = None
+        Bcfg2.Server.Plugin.EntrySet.__init__(self, basename, path, KeyData,
+                                              encoding)
+        self.metadata = {'owner': 'root',
+                         'group': 'root',
+                         'type': 'file'}
+        if encoding is not None:
+            self.metadata['encoding'] = encoding
+        if basename.endswith('.pub'):
+            self.metadata['perms'] = '0644'
+        else:
+            self.metadata['perms'] = '0600'
+
+
+class KnownHostsEntrySet(Bcfg2.Server.Plugin.EntrySet):
+    def __init__(self, path):
+        Bcfg2.Server.Plugin.EntrySet.__init__(self, "ssh_known_hosts", path,
+                                              KeyData, None)
+        self.metadata = {'owner': 'root',
+                         'group': 'root',
+                         'type': 'file',
+                         'perms': '0644'}
 
 
 class SSHbase(Bcfg2.Server.Plugin.Plugin,
               Bcfg2.Server.Plugin.Generator,
-              Bcfg2.Server.Plugin.DirectoryBacked,
               Bcfg2.Server.Plugin.PullTarget):
     """
        The sshbase generator manages ssh host keys (both v1 and v2)
@@ -25,9 +90,9 @@ class SSHbase(Bcfg2.Server.Plugin.Plugin,
          (hostname)
        ssh_host_key.pub.H_(hostname) -> the v1 host public key
          for (hostname)
-       ssh_host_(dr)sa_key.H_(hostname) -> the v2 ssh host
+       ssh_host_(ec)(dr)sa_key.H_(hostname) -> the v2 ssh host
          private key for (hostname)
-       ssh_host_(dr)sa_key.pub.H_(hostname) -> the v2 ssh host
+       ssh_host_(ec)(dr)sa_key.pub.H_(hostname) -> the v2 ssh host
          public key for (hostname)
        ssh_known_hosts -> the current known hosts file. this
          is regenerated each time a new key is generated.
@@ -37,50 +102,56 @@ class SSHbase(Bcfg2.Server.Plugin.Plugin,
     __version__ = '$Id$'
     __author__ = 'bcfg-dev@mcs.anl.gov'
 
-    pubkeys = ["ssh_host_dsa_key.pub.H_%s",
-                "ssh_host_rsa_key.pub.H_%s", "ssh_host_key.pub.H_%s"]
-    hostkeys = ["ssh_host_dsa_key.H_%s",
-                "ssh_host_rsa_key.H_%s", "ssh_host_key.H_%s"]
-    keypatterns = ['ssh_host_dsa_key', 'ssh_host_rsa_key', 'ssh_host_key',
-                   'ssh_host_dsa_key.pub', 'ssh_host_rsa_key.pub',
-                   'ssh_host_key.pub']
+    keypatterns = ["ssh_host_dsa_key",
+                   "ssh_host_ecdsa_key",
+                   "ssh_host_rsa_key",
+                   "ssh_host_key",
+                   "ssh_host_dsa_key.pub",
+                   "ssh_host_ecdsa_key.pub",
+                   "ssh_host_rsa_key.pub",
+                   "ssh_host_key.pub"]
 
     def __init__(self, core, datastore):
         Bcfg2.Server.Plugin.Plugin.__init__(self, core, datastore)
         Bcfg2.Server.Plugin.Generator.__init__(self)
         Bcfg2.Server.Plugin.PullTarget.__init__(self)
-        try:
-            Bcfg2.Server.Plugin.DirectoryBacked.__init__(self, self.data,
-                                                         self.core.fam)
-        except OSError, ioerr:
-            self.logger.error("Failed to load SSHbase repository from %s" \
-                              % (self.data))
-            self.logger.error(ioerr)
-            raise Bcfg2.Server.Plugin.PluginInitError
-        self.Entries = {'Path':
-                        {'/etc/ssh/ssh_known_hosts': self.build_skn,
-                         '/etc/ssh/ssh_host_dsa_key': self.build_hk,
-                         '/etc/ssh/ssh_host_rsa_key': self.build_hk,
-                         '/etc/ssh/ssh_host_dsa_key.pub': self.build_hk,
-                         '/etc/ssh/ssh_host_rsa_key.pub': self.build_hk,
-                         '/etc/ssh/ssh_host_key': self.build_hk,
-                         '/etc/ssh/ssh_host_key.pub': self.build_hk}}
         self.ipcache = {}
         self.namecache = {}
         self.__skn = False
 
+        # keep track of which bogus keys we've warned about, and only
+        # do so once
+        self.badnames = dict()
+
+        core.fam.AddMonitor(self.data, self)
+
+        self.static = dict()
+        self.entries = dict()
+        self.Entries['Path'] = dict()
+
+        self.entries['/etc/ssh/ssh_known_hosts'] = KnownHostsEntrySet(self.data)
+        self.Entries['Path']['/etc/ssh/ssh_known_hosts'] = self.build_skn
+        for keypattern in self.keypatterns:
+            self.entries["/etc/ssh/" + keypattern] = HostKeyEntrySet(keypattern,
+                                                                     self.data)
+            self.Entries['Path']["/etc/ssh/" + keypattern] = self.build_hk
+
     def get_skn(self):
         """Build memory cache of the ssh known hosts file."""
         if not self.__skn:
-            self.__skn = "\n".join([value.data for key, value in \
-                                    list(self.entries.items()) if \
-                                    key.endswith('.static')])
-            names = dict()
             # if no metadata is registered yet, defer
             if len(self.core.metadata.query.all()) == 0:
                 self.__skn = False
                 return self.__skn
-            for cmeta in self.core.metadata.query.all():
+
+            skn = [s.data.decode().rstrip()
+                   for s in list(self.static.values())]
+
+            mquery = self.core.metadata.query
+            
+            # build hostname cache
+            names = dict()
+            for cmeta in mquery.all():
                 names[cmeta.hostname] = set([cmeta.hostname])
                 names[cmeta.hostname].update(cmeta.aliases)
                 newnames = set()
@@ -102,20 +173,50 @@ class SSHbase(Bcfg2.Server.Plugin.Plugin,
                         except:
                             continue
                 names[cmeta.hostname] = sorted(names[cmeta.hostname])
-            # now we have our name cache
-            pubkeys = [pubk for pubk in list(self.entries.keys()) \
-                       if pubk.find('.pub.H_') != -1]
+
+            pubkeys = [pubk for pubk in list(self.entries.keys())
+                       if pubk.endswith('.pub')]
             pubkeys.sort()
-            badnames = set()
             for pubkey in pubkeys:
-                hostname = pubkey.split('H_')[1]
-                if hostname not in names:
-                    if hostname not in badnames:
-                        badnames.add(hostname)
-                        self.logger.error("SSHbase: Unknown host %s; ignoring public keys" % hostname)
-                    continue
-                self.__skn += "%s %s" % (','.join(names[hostname]),
-                                         self.entries[pubkey].data)
+                for entry in sorted(self.entries[pubkey].entries.values(),
+                                    key=lambda e: e.specific.hostname or e.specific.group):
+                    specific = entry.specific
+                    hostnames = []
+                    if specific.hostname and specific.hostname in names:
+                        hostnames = names[specific.hostname]
+                    elif specific.group:
+                        hostnames = \
+                            reduce(lambda x, y: x + y,
+                                   [names[cmeta.hostname]
+                                    for cmeta in \
+                                    mquery.by_groups([specific.group])], [])
+                    elif specific.all:
+                        # a generic key for all hosts?  really?
+                        hostnames = reduce(lambda x, y: x + y,
+                                           list(names.values()), [])
+                    if not hostnames:
+                        if specific.hostname:
+                            key = specific.hostname
+                            ktype = "host"
+                        elif specific.group:
+                            key = specific.group
+                            ktype = "group"
+                        else:
+                            # user has added a global SSH key, but
+                            # have no clients yet.  don't warn about
+                            # this.
+                            continue
+                            
+                        if key not in self.badnames:
+                            self.badnames[key] = True
+                            self.logger.info("Ignoring key for unknown %s %s" %
+                                             (ktype, key))
+                        continue
+                    
+                    skn.append("%s %s" % (','.join(hostnames),
+                                          entry.data.decode().rstrip()))
+
+            self.__skn = "\n".join(skn) + "\n"
         return self.__skn
 
     def set_skn(self, value):
@@ -125,28 +226,37 @@ class SSHbase(Bcfg2.Server.Plugin.Plugin,
 
     def HandleEvent(self, event=None):
         """Local event handler that does skn regen on pubkey change."""
-        Bcfg2.Server.Plugin.DirectoryBacked.HandleEvent(self, event)
-        if event and '_key.pub.H_' in event.filename:
-            self.skn = False
-        if event and event.filename.endswith('.static'):
-            self.skn = False
-        if not self.__skn:
-            if (len(list(self.entries.keys()))) >= (len(os.listdir(self.data)) - 1):
-                _ = self.skn
+        # skip events we don't care about
+        action = event.code2str()
+        if action == "endExist" or event.filename == self.data:
+            return
+        
+        for entry in list(self.entries.values()):
+            if entry.specific.match(event.filename):
+                entry.handle_event(event)
+                if event.filename.endswith(".pub"):
+                    self.skn = False
+                return
 
-    def HandlesEntry(self, entry, _):
-        """Handle key entries dynamically."""
-        return entry.tag == 'Path' and \
-               ([fpat for fpat in self.keypatterns
-                 if entry.get('name').endswith(fpat)]
-                or entry.get('name').endswith('ssh_known_hosts'))
+        if event.filename in ['info', 'info.xml', ':info']:
+            for entry in list(self.entries.values()):
+                entry.handle_event(event)
+            return
 
-    def HandleEntry(self, entry, metadata):
-        """Bind data."""
-        if entry.get('name').endswith('ssh_known_hosts'):
-            return self.build_skn(entry, metadata)
-        else:
-            return self.build_hk(entry, metadata)
+        if event.filename.endswith('.static'):
+            if action == "deleted" and event.filename in self.static:
+                del self.static[event.filename]
+                self.skn = False
+            else:
+                self.static[event.filename] = \
+                    Bcfg2.Server.Plugin.FileBacked(os.path.join(self.data,
+                                                                event.filename))
+                self.static[event.filename].HandleEvent(event)
+                self.skn = False
+            return
+
+        self.logger.warn("SSHbase: Got unknown event %s %s" %
+                         (event.filename, action))
 
     def get_ipcache_entry(self, client):
         """Build a cache of dns results."""
@@ -162,8 +272,7 @@ class SSHbase(Bcfg2.Server.Plugin.Plugin,
                 self.ipcache[client] = (ipaddr, client)
                 return (ipaddr, client)
             except socket.gaierror:
-                cmd = "getent hosts %s" % client
-                ipaddr = Popen(cmd, shell=True, \
+                ipaddr = Popen(["getent", "hosts", client],
                                stdout=PIPE).stdout.read().strip().split()
                 if ipaddr:
                     self.ipcache[client] = (ipaddr, client)
@@ -197,74 +306,93 @@ class SSHbase(Bcfg2.Server.Plugin.Plugin,
 
     def build_skn(self, entry, metadata):
         """This function builds builds a host specific known_hosts file."""
-        client = metadata.hostname
-        entry.text = self.skn
-        hostkeys = [keytmpl % client for keytmpl in self.pubkeys \
-                        if (keytmpl % client) in self.entries]
-        hostkeys.sort()
-        for hostkey in hostkeys:
-            entry.text += "localhost,localhost.localdomain,127.0.0.1 %s" % (
-                self.entries[hostkey].data)
-        permdata = {'owner': 'root',
-                    'group': 'root',
-                    'type': 'file',
-                    'perms': '0644'}
-        [entry.attrib.__setitem__(key, permdata[key]) for key in permdata]
+        try:
+            rv = self.entries[entry.get('name')].bind_entry(entry, metadata)
+        except Bcfg2.Server.Plugin.PluginExecutionError:
+            client = metadata.hostname
+            entry.text = self.skn
+            hostkeys = []
+            for k in self.keypatterns:
+                if k.endswith(".pub"):
+                    try:
+                        hostkeys.append(self.entries["/etc/ssh/" +
+                                                     k].best_matching(metadata))
+                    except Bcfg2.Server.Plugin.PluginExecutionError:
+                        pass
+            hostkeys.sort()
+            for hostkey in hostkeys:
+                entry.text += "localhost,localhost.localdomain,127.0.0.1 %s" % (
+                    hostkey.data.decode())
+            self.entries[entry.get('name')].bind_info_to_entry(entry, metadata)
 
     def build_hk(self, entry, metadata):
         """This binds host key data into entries."""
-        client = metadata.hostname
-        filename = "%s.H_%s" % (entry.get('name').split('/')[-1], client)
-        if filename not in list(self.entries.keys()):
-            self.GenerateHostKeys(client)
-        if not filename in self.entries:
-            self.logger.error("%s still not registered" % filename)
-            raise Bcfg2.Server.Plugin.PluginExecutionError
-        keydata = self.entries[filename].data
-        permdata = {'owner': 'root',
-                    'group': 'root',
-                    'type': 'file',
-                    'perms': '0600'}
-        if entry.get('name')[-4:] == '.pub':
-            permdata['perms'] = '0644'
-        [entry.attrib.__setitem__(key, permdata[key]) for key in permdata]
-        if "ssh_host_key.H_" == filename[:15]:
-            entry.attrib['encoding'] = 'base64'
-            entry.text = binascii.b2a_base64(keydata)
-        else:
-            entry.text = keydata
+        try:
+            self.entries[entry.get('name')].bind_entry(entry, metadata)
+        except Bcfg2.Server.Plugin.PluginExecutionError:
+            filename = entry.get('name').split('/')[-1]
+            self.GenerateHostKeyPair(metadata.hostname, filename)
+            # Service the FAM events queued up by the key generation
+            # so the data structure entries will be available for
+            # binding.
+            #
+            # NOTE: We wait for up to ten seconds. There is some
+            # potential for race condition, because if the file
+            # monitor doesn't get notified about the new key files in
+            # time, those entries won't be available for binding. In
+            # practice, this seems "good enough".
+            tries = 0
+            is_bound = False
+            while not is_bound:
+                if tries >= 10:
+                    self.logger.error("%s still not registered" % filename)
+                    raise Bcfg2.Server.Plugin.PluginExecutionError
+                self.core.fam.handle_events_in_interval(1)
+                tries += 1
+                try:
+                    self.entries[entry.get('name')].bind_entry(entry, metadata)
+                    is_bound = True
+                except Bcfg2.Server.Plugin.PluginExecutionError:
+                    pass
 
-    def GenerateHostKeys(self, client):
-        """Generate new host keys for client."""
-        keylist = [keytmpl % client for keytmpl in self.hostkeys]
-        for hostkey in keylist:
-            if 'ssh_host_rsa_key.H_' == hostkey[:19]:
-                keytype = 'rsa'
-            elif 'ssh_host_dsa_key.H_' == hostkey[:19]:
-                keytype = 'dsa'
+    def GenerateHostKeyPair(self, client, filename):
+        """Generate new host key pair for client."""
+        match = re.search(r'(ssh_host_(?:((?:ecd|d|r)sa)_)?key)', filename)
+        if match:
+            hostkey = "%s.H_%s" % (match.group(1), client)
+            if match.group(2):
+                keytype = match.group(2)
             else:
                 keytype = 'rsa1'
+        else:
+            self.logger.error("Unknown key filename: %s" % filename)
+            return
+        
+        fileloc = "%s/%s" % (self.data, hostkey)
+        publoc = self.data + '/' + ".".join([hostkey.split('.')[0], 'pub',
+                                             "H_%s" % client])
+        tempdir = tempfile.mkdtemp()
+        temploc = "%s/%s" % (tempdir, hostkey)
+        cmd = ["ssh-keygen", "-q", "-f", temploc, "-N", "",
+               "-t", keytype, "-C", "root@%s" % client]
+        proc = Popen(cmd, stdout=PIPE, stdin=PIPE)
+        proc.communicate()
+        proc.wait()
 
-            if hostkey not in list(self.entries.keys()):
-                fileloc = "%s/%s" % (self.data, hostkey)
-                publoc = self.data + '/' + ".".join([hostkey.split('.')[0],
-                                                     'pub',
-                                                     "H_%s" % client])
-                tempdir = tempfile.mkdtemp()
-                temploc = "%s/%s" % (tempdir, hostkey)
-                cmd = 'ssh-keygen -q -f %s -N "" -t %s -C root@%s < /dev/null'
-                os.system(cmd % (temploc, keytype, client))
-                shutil.copy(temploc, fileloc)
-                shutil.copy("%s.pub" % temploc, publoc)
-                self.AddEntry(hostkey)
-                self.AddEntry(".".join([hostkey.split('.')[0]] + ['pub', "H_%s" \
-                                                                  % client]))
-                try:
-                    os.unlink(temploc)
-                    os.unlink("%s.pub" % temploc)
-                    os.rmdir(tempdir)
-                except OSError:
-                    self.logger.error("Failed to unlink temporary ssh keys")
+        try:
+            shutil.copy(temploc, fileloc)
+            shutil.copy("%s.pub" % temploc, publoc)
+        except IOError:
+            err = sys.exc_info()[1]
+            self.logger.error("Temporary SSH keys not found: %s" % err)
+
+        try:
+            os.unlink(temploc)
+            os.unlink("%s.pub" % temploc)
+            os.rmdir(tempdir)
+        except OSError:
+            err = sys.exc_info()[1]
+            self.logger.error("Failed to unlink temporary ssh keys: %s" % err)
 
     def AcceptChoices(self, _, metadata):
         return [Bcfg2.Server.Plugin.Specificity(hostname=metadata.hostname)]

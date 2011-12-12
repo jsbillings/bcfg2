@@ -10,7 +10,8 @@ import os
 import sys
 try:
     import Bcfg2.Server.Reports.settings
-except Exception, e:
+except Exception:
+    e = sys.exc_info()[1]
     sys.stderr.write("Failed to load configuration settings. %s\n" % e)
     sys.exit(1)
 
@@ -29,15 +30,21 @@ from datetime import datetime
 from time import strptime
 from django.db import connection
 from Bcfg2.Server.Reports.updatefix import update_database
-import ConfigParser
 import logging
 import Bcfg2.Logger
 import platform
 
+# Compatibility import
+from Bcfg2.Bcfg2Py3k import ConfigParser
 
-def build_reason_kwargs(r_ent):
+
+def build_reason_kwargs(r_ent, encoding, logger):
     binary_file = False
-    if r_ent.get('current_bfile', False):
+    sensitive_file = False
+    if r_ent.get('sensitive') in ['true', 'True']:
+        sensitive_file = True
+        rc_diff = ''
+    elif r_ent.get('current_bfile', False):
         binary_file = True
         rc_diff = r_ent.get('current_bfile')
         if len(rc_diff) > 1024 * 1024:
@@ -51,6 +58,12 @@ def build_reason_kwargs(r_ent):
         rc_diff = r_ent.get('current_diff')
     else:
         rc_diff = ''
+    if not binary_file:
+        try:
+            rc_diff = rc_diff.decode(encoding)
+        except:
+            logger.error("Reason isn't %s encoded, cannot decode it" % encoding)
+            rc_diff = ''
     return dict(owner=r_ent.get('owner', default=""),
                 current_owner=r_ent.get('current_owner', default=""),
                 group=r_ent.get('group', default=""),
@@ -65,10 +78,11 @@ def build_reason_kwargs(r_ent):
                 current_version=r_ent.get('current_version', default=""),
                 current_exists=r_ent.get('current_exists', default="True").capitalize() == "True",
                 current_diff=rc_diff,
-                is_binary=binary_file)
+                is_binary=binary_file,
+                is_sensitive=sensitive_file)
 
 
-def load_stats(cdata, sdata, vlevel, logger, quick=False, location=''):
+def load_stats(cdata, sdata, encoding, vlevel, logger, quick=False, location=''):
     clients = {}
     [clients.__setitem__(c.name, c) \
         for c in Client.objects.all()]
@@ -126,21 +140,19 @@ def load_stats(cdata, sdata, vlevel, logger, quick=False, location=''):
             for (xpath, type) in pattern:
                 for x in statistics.findall(xpath):
                     counter_fields[type] = counter_fields[type] + 1
-                    kargs = build_reason_kwargs(x)
+                    kargs = build_reason_kwargs(x, encoding, logger)
 
                     try:
                         rr = None
-                        if not quick:
-                            try:
-                                rr = Reason.objects.filter(**kargs)[0]
-                            except IndexError:
-                                pass
-                        if not rr:
+                        try:
+                            rr = Reason.objects.filter(**kargs)[0]
+                        except IndexError:
                             rr = Reason(**kargs)
                             rr.save()
                             if vlevel > 0:
                                 logger.info("Created reason: %s" % rr.id)
-                    except Exception, ex:
+                    except Exception:
+                        ex = sys.exc_info()[1]
                         logger.error("Failed to create reason for %s: %s" % (x.get('name'), ex))
                         rr = Reason(current_exists=x.get('current_exists',
                                                          default="True").capitalize() == "True")
@@ -213,7 +225,8 @@ if __name__ == '__main__':
                                                      "stats=",
                                                      "config=",
                                                      "syslog"])
-    except GetoptError, mesg:
+    except GetoptError:
+        mesg = sys.exc_info()[1]
         # print help information and exit:
         print("%s\nUsage:\nimportscript.py [-h] [-v] [-u] [-d] [-S] [-C bcfg2 config file] [-c clients-file] [-s statistics-file]" % (mesg))
         raise SystemExit(2)
@@ -268,6 +281,11 @@ if __name__ == '__main__':
         print("StatReports: Failed to parse %s" % (statpath))
         raise SystemExit(1)
 
+    try:
+        encoding = cf.get('components', 'encoding')
+    except:
+        encoding = 'UTF-8'
+
     if not clientpath:
         try:
             clientspath = "%s/Metadata/clients.xml" % \
@@ -286,6 +304,7 @@ if __name__ == '__main__':
     update_database()
     load_stats(clientsdata,
                statsdata,
+               encoding,
                verb,
                logger,
                quick=q,

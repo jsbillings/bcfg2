@@ -1,9 +1,14 @@
 import django
+import sys
 
+# Compatibility import
+from Bcfg2.Bcfg2Py3k import ConfigParser
 # Django settings for bcfg2 reports project.
-from ConfigParser import ConfigParser, NoSectionError, NoOptionError
-c = ConfigParser()
-c.read(['/etc/bcfg2.conf', '/etc/bcfg2-web.conf'])
+c = ConfigParser.ConfigParser()
+if len(c.read(['/etc/bcfg2.conf', '/etc/bcfg2-web.conf'])) == 0:
+    print("Please check that bcfg2.conf or bcfg2-web.conf exists "
+          "and is readable by your web server.")
+    sys.exit(1)
 
 try:
     dset = c.get('statistics', 'web_debug')
@@ -22,8 +27,12 @@ ADMINS = (
 )
 
 MANAGERS = ADMINS
-
-db_engine = c.get('statistics', 'database_engine')
+try:
+    db_engine = c.get('statistics', 'database_engine')
+except ConfigParser.NoSectionError:
+    e = sys.exc_info()[1]
+    print("Failed to determine database engine: %s" % e)
+    sys.exit(1)
 db_name = ''
 if c.has_option('statistics', 'database_name'):
     db_name = c.get('statistics', 'database_name')
@@ -41,7 +50,10 @@ if db_engine != 'sqlite3':
     DATABASES['default']['USER'] =  c.get('statistics', 'database_user')
     DATABASES['default']['PASSWORD'] = c.get('statistics', 'database_password')
     DATABASES['default']['HOST'] = c.get('statistics', 'database_host')
-    DATABASES['default']['PORT'] = c.get('statistics', 'database_port')
+    try:
+        DATABASES['default']['PORT'] = c.get('statistics', 'database_port')
+    except: # An empty string tells Django to use the default port.
+        DATABASES['default']['PORT'] = ''
 
 if django.VERSION[0] == 1 and django.VERSION[1] < 2:
     DATABASE_ENGINE = db_engine

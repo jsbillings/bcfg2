@@ -35,10 +35,12 @@ class DebInit(Bcfg2.Client.Tools.SvcTool):
 
         if entry.get('sequence'):
             if (deb_version in DEBIAN_OLD_STYLE_BOOT_SEQUENCE or
-                deb_version.startswith('5')):
+                deb_version.startswith('5') or
+                os.path.exists('/etc/init.d/.legacy-bootordering')):
                 start_sequence = int(entry.get('sequence'))
                 kill_sequence = 100 - start_sequence
             else:
+                start_sequence = None
                 self.logger.warning("Your debian version boot sequence is "
                                     "dependency based \"sequence\" attribute "
                                     "will be ignored.")
@@ -79,7 +81,7 @@ class DebInit(Bcfg2.Client.Tools.SvcTool):
         if entry.get('mode', 'default') == 'manual':
             self.logger.info("Service %s mode set to manual. Skipping "
                              "installation." % (entry.get('name')))
-            return True
+            return False
         self.logger.info("Installing Service %s" % (entry.get('name')))
         try:
             os.stat('/etc/init.d/%s' % entry.get('name'))

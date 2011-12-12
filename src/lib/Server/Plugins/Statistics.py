@@ -8,7 +8,6 @@ import logging
 from lxml.etree import XML, SubElement, Element, XMLSyntaxError
 import lxml.etree
 import os
-import Queue
 from time import asctime, localtime, time, strptime, mktime
 import threading
 
@@ -33,7 +32,8 @@ class StatisticsStore(object):
                 or force:
             try:
                 fout = open(self.filename + '.new', 'w')
-            except IOError, ioerr:
+            except IOError:
+                ioerr = sys.exc_info()[1]
                 self.logger.error("Failed to open %s for writing: %s" % (self.filename + '.new', ioerr))
             else:
                 fout.write(lxml.etree.tostring(self.element, encoding='UTF-8', xml_declaration=True))
@@ -150,7 +150,9 @@ class Statistics(Bcfg2.Server.Plugin.Plugin,
         owner = cfentry.get('current_owner', cfentry.get('owner'))
         group = cfentry.get('current_group', cfentry.get('group'))
         perms = cfentry.get('current_perms', cfentry.get('perms'))
-        if 'current_bfile' in cfentry.attrib:
+        if cfentry.get('sensitive') in ['true', 'True']:
+            raise Bcfg2.Server.Plugin.PluginExecutionError
+        elif 'current_bfile' in cfentry.attrib:
             contents = binascii.a2b_base64(cfentry.get('current_bfile'))
         elif 'current_bdiff' in cfentry.attrib:
             diff = binascii.a2b_base64(cfentry.get('current_bdiff'))

@@ -74,7 +74,8 @@ def _populate_interaction_entry_counts():
             updates.append(row)
         try:
             cursor.executemany("update reports_interaction set " + count_field[type] + "=%s where id = %s", updates)
-        except Exception, e:
+        except Exception:
+            e = sys.exc_info()[1]
             print(e)
     cursor.close()
 
@@ -101,6 +102,7 @@ _fixes = [_merge_database_table_entries,
           _populate_interaction_entry_counts,
           _interactions_constraint_or_idx,
           'alter table reports_reason add is_binary bool NOT NULL default False;',
+          'alter table reports_reason add is_sensitive bool NOT NULL default False;',
 ]
 
 # this will calculate the last possible version of the database

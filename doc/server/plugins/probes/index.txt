@@ -37,9 +37,9 @@ interpreter.
 
     Bcfg2 uses python mkstemp to create the Probe scripts on the
     client. If your /tmp directory is mounted **noexec**, you will
-    likely need to modify the TMPDIR environment variable so that the
-    bcfg2 client creates the temporary files in a directory from which
-    it can execute.
+    likely need to modify the :envvar:`TMPDIR` environment variable so
+    that the bcfg2 client creates the temporary files in a directory
+    from which it can execute.
 
 Now we need to figure out what exactly we want to do.  In this case,
 we want to hand out an ``/etc/auto.master`` file that looks like::
@@ -85,10 +85,12 @@ file looks like::
     #end if
 
 Any Probe script you run will store its output in
-``$self.metadata.Probes["scriptname"]``, so we get to our `scratchlocal`
-script's output as seen above.  Note that we had to wrap the output in an
-`int()` call; the script output is treated as a string, so it needs to
-be converted before it can be tested numerically.
+``$self.metadata.Probes["scriptname"]``, so we get to our
+`scratchlocal` script's output as seen above.  (See `Handling Probe
+Output`_, below, for more information on how this is done.)  Note that
+we had to wrap the output in an `int()` call; the script output is
+treated as a string, so it needs to be converted before it can be
+tested numerically.
 
 With all of these pieces in place, the following series of events will
 happen when the client is run:
@@ -110,8 +112,37 @@ is to add the ``/etc/auto.master`` to a Bundle:
 
     <Path name='/etc/auto.master'/>
 
-Host and Group Specific probes
-==============================
+Handling Probe Output
+=====================
+
+Bcfg2 stores output from probes in the ``Probes`` property of a
+client's metadata object.  To access this data in TGenshi, for
+instance, you could do::
+
+  ${metadata.Probes['script-name']}
+
+This is not the full output of the probe; any lines that start with
+"group:" have been stripped from the output.  The data is a
+string-like object that has some interesting and salient features:
+
+* If the data is a valid XML document, then
+  ``metadata.Probes['script-name'].xdata`` will be an
+  ``lxml.etree._Element`` object representing the XML data.
+* If the data is a valid JSON document, and either the Python ``json``
+  or ``simplejson`` module is installed, then
+  ``metadata.Probes['script-name'].json`` will be a data structure
+  representing the JSON data.
+* If the data is a valid YAML document, and either the Python ``yaml``
+  or ``syck`` module is installed, then
+  ``metadata.Probes['script-name'].yaml`` will be a data structure
+  representing the YAML data.
+
+If these conditions are not met, then the named properties will be
+``None``.  In all other fashions, the probe data objects should act
+like strings.
+
+Host- and Group-Specific probes
+===============================
 
 Bcfg2 has the ability to alter probes based on client hostname and group
 membership. These files work similarly to files in Cfg.
@@ -143,3 +174,60 @@ Other examples
    :hidden:
 
    ohai
+
+.. _server-plugins-probes-fileprobes:
+
+FileProbes
+==========
+
+The FileProbes plugin allows you to probe a client for a file,
+which is then added to the :ref:`server-plugins-generators-cfg`
+specification.  If the file changes on the client, FileProbes can
+either update it in the specification or allow Cfg to replace it.
+
+FileProbes will not probe a file if there's already a file in Cfg that
+will apply to the client.  So if, for instance, you have a generic
+file in ``Cfg/etc/foo.conf/foo.conf`` that applies to all hosts,
+FileProbes will not retrieve ``/etc/foo.conf`` from the client (unless
+``update`` is enabled; see Configuration_ below).
+
+When a new config file is first probed, an ``info.xml`` file is also
+written to enforce the permissions from that client.  Subsequent
+probes from other clients will not modify or overwrite the data in
+``info.xml``.  (This ensures that any manual changes you make to
+``info.xml`` for that file are not circumvented.)
+
+Configuration
+-------------
+
+FileProbes is configured in ``FileProbes/config.xml``, which might
+look something like:
+
+.. code-block:: xml
+
+    <FileProbes>
+      <FileProbe name="/etc/foo.conf"/>
+      <Group name="blah-servers">
+        <FileProbe name="/etc/blah.conf" update="true"
+      </Group>
+      <Client name="bar.example.com">
+        <FileProbe name="/var/lib/bar.gz" base64="true"/>
+      </Client>
+    </FileProbes>
+
+This will result in ``/etc/foo.conf`` being retrieved from all
+clients; if it changes on a client, it will be overwritten by the
+version that was retrieved initially.
+
+Clients in the ``blah-servers`` group will be probed for
+``/etc/blah.conf``; if it changes on a client, those changes will be
+written into the Bcfg2 specification.  If the file is deleted from a
+client, it will be rewritten from Bcfg2.
+
+``bar.example.com`` will be probed for ``/var/lib/bar.gz``, which
+contains non-ASCII characters and so needs to use base64 encoding when
+transferring the file.
+
+The paths probed by FileProbes must also be included as Path entries
+in your bundles in order to be handled properly by Cfg.  Permissions
+are handled as usual, with ``info.xml`` files in Cfg.

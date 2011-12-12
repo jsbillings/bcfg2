@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 
-from distutils.core import setup
-from distutils.core import Command
+from setuptools import setup
+from setuptools import Command
 from fnmatch import fnmatch
 from glob import glob
+import os
 import os.path
+import sys
 
 class BuildDTDDoc (Command):
     """Build DTD documentation"""
@@ -113,9 +115,13 @@ try:
 except ImportError:
     pass
 
+py3lib = 'src/lib/Bcfg2Py3Incompat.py'
+if sys.hexversion < 0x03000000 and os.path.exists(py3lib):
+    os.remove(py3lib)
+
 setup(cmdclass=cmdclass,
       name="Bcfg2",
-      version="1.2.0pre1",
+      version="1.2.0",
       description="Bcfg2 Server",
       author="Narayan Desai",
       author_email="desai@mcs.anl.gov",
@@ -128,12 +134,14 @@ setup(cmdclass=cmdclass,
                 "Bcfg2.Server.Hostbase.hostbase",
                 "Bcfg2.Server.Lint",
                 "Bcfg2.Server.Plugins",
+                "Bcfg2.Server.Plugins.Packages",
                 "Bcfg2.Server.Reports",
                 "Bcfg2.Server.Reports.reports",
                 "Bcfg2.Server.Reports.reports.templatetags",
                 "Bcfg2.Server.Snapshots",
                 ],
-      package_dir = {'Bcfg2':'src/lib'},
+      install_requires = ["lxml"],
+      package_dir = {'Bcfg2': 'src/lib'},
       package_data = {'Bcfg2.Server.Reports.reports':['fixtures/*.xml',
                 'templates/*.html', 'templates/*/*.html',
                 'templates/*/*.inc' ] },

@@ -1,10 +1,11 @@
+import fnmatch
 import glob
 import lxml.etree
 import os
-import fnmatch
-import Bcfg2.Options
-import Bcfg2.Server.Lint
 from subprocess import Popen, PIPE, STDOUT
+import sys
+
+import Bcfg2.Server.Lint
 
 class Validate(Bcfg2.Server.Lint.ServerlessPlugin):
     """ Ensure that the repo validates """
@@ -14,60 +15,63 @@ class Validate(Bcfg2.Server.Lint.ServerlessPlugin):
         self.filesets = {"metadata:groups":"%s/metadata.xsd",
                          "metadata:clients":"%s/clients.xsd",
                          "info":"%s/info.xsd",
-                         "%s/Bundler/*.{xml,genshi}":"%s/bundle.xsd",
+                         "%s/Bundler/*.xml":"%s/bundle.xsd",
+                         "%s/Bundler/*.genshi":"%s/bundle.xsd",
                          "%s/Pkgmgr/*.xml":"%s/pkglist.xsd",
                          "%s/Base/*.xml":"%s/base.xsd",
                          "%s/Rules/*.xml":"%s/rules.xsd",
+                         "%s/Defaults/*.xml":"%s/defaults.xsd",
                          "%s/etc/report-configuration.xml":"%s/report-configuration.xsd",
                          "%s/Svcmgr/*.xml":"%s/services.xsd",
                          "%s/Deps/*.xml":"%s/deps.xsd",
                          "%s/Decisions/*.xml":"%s/decisions.xsd",
-                         "%s/Packages/config.xml":"%s/packages.xsd",
-                         "%s/GroupPatterns/config.xml":"%s/grouppatterns.xsd"}
+                         "%s/Packages/sources.xml":"%s/packages.xsd",
+                         "%s/GroupPatterns/config.xml":"%s/grouppatterns.xsd",
+                         "%s/NagiosGen/config.xml":"%s/nagiosgen.xsd",
+                         "%s/FileProbes/config.xml":"%s/fileprobes.xsd",
+                         }
 
         self.filelists = {}
         self.get_filelists()
 
-    @Bcfg2.Server.Lint.returnErrors
     def Run(self):
-        self.schemadir = self.config['schema']
+        schemadir = self.config['schema']
         
-        for schemaname, path in self.filesets.items():
+        for path, schemaname in self.filesets.items():
             try:
                 filelist = self.filelists[path]
             except KeyError:
                 filelist = []
-                
+
             if filelist:
                 # avoid loading schemas for empty file lists
+                schemafile = schemaname % schemadir
                 try:
-                    schema = lxml.etree.XMLSchema(lxml.etree.parse(schemaname %
-                                                                   schemadir))
-                except:
-                    self.LintWarning("Failed to process schema %s",
-                                     schemaname % schemadir)
+                    schema = lxml.etree.XMLSchema(lxml.etree.parse(schemafile))
+                except IOError:
+                    e = sys.exc_info()[1]
+                    self.LintError("input-output-error", str(e))
+                    continue
+                except lxml.etree.XMLSchemaParseError:
+                    e = sys.exc_info()[1]
+                    self.LintError("schema-failed-to-parse",
+                                   "Failed to process schema %s: %s" %
+                                   (schemafile, e))
                     continue
                 for filename in filelist:
-                    self.validate(filename, schemaname % schemadir,
-                                  schema=schema)
+                    self.validate(filename, schemafile, schema=schema)
 
         self.check_properties()
 
     def check_properties(self):
         """ check Properties files against their schemas """
-        alert = self.logger.debug
-        if "properties_schema" in self.config:
-            if self.config['properties_schema'].lower().startswith('warn'):
-                alert = self.LintWarning
-            elif self.config['properties_schema'].lower().startswith('require'):
-                alert = self.LintError
-            
         for filename in self.filelists['props']:
             schemafile = "%s.xsd" % os.path.splitext(filename)[0]
             if os.path.exists(schemafile):
                 self.validate(filename, schemafile)
             else:
-                alert("No schema found for %s" % filename)
+                self.LintError("properties-schema-not-found",
+                               "No schema found for %s" % filename)
 
     def validate(self, filename, schemafile, schema=None):
         """validate a file against the given lxml.etree.Schema.
@@ -77,19 +81,22 @@ class Validate(Bcfg2.Server.Lint.ServerlessPlugin):
             try:
                 schema = lxml.etree.XMLSchema(lxml.etree.parse(schemafile))
             except:
-                self.LintWarning("Failed to process schema %s" % schemafile)
+                self.LintError("schema-failed-to-parse",
+                               "Failed to process schema %s" % schemafile)
                 return False
 
         try:
             datafile = lxml.etree.parse(filename)
         except SyntaxError:
             lint = Popen(["xmllint", filename], stdout=PIPE, stderr=STDOUT)
-            self.LintError("%s fails to parse:\n%s" % (filename,
+            self.LintError("xml-failed-to-parse",
+                           "%s fails to parse:\n%s" % (filename,
                                                        lint.communicate()[0]))
             lint.wait()
             return False
         except IOError:
-            self.LintError("Failed to open file %s" % filename)
+            self.LintError("xml-failed-to-read",
+                           "Failed to open file %s" % filename)
             return False
     
         if not schema.validate(datafile):
@@ -100,7 +107,8 @@ class Validate(Bcfg2.Server.Lint.ServerlessPlugin):
             lint = Popen(cmd, stdout=PIPE, stderr=STDOUT)
             output = lint.communicate()[0]
             if lint.wait():
-                self.LintError("%s fails to verify:\n%s" % (filename, output))
+                self.LintError("xml-failed-to-verify",
+                               "%s fails to verify:\n%s" % (filename, output))
                 return False
         return True
 
@@ -141,7 +149,8 @@ class Validate(Bcfg2.Server.Lint.ServerlessPlugin):
         for fname in all_metadata:
             if (fname not in self.filelists['metadata:groups'] and
                 fname not in self.filelists['metadata:clients']):
-                self.LintWarning("Broken XInclude chain: Could not determine file type of %s" % fname)
+                self.LintError("broken-xinclude-chain",
+                               "Broken XInclude chain: Could not determine file type of %s" % fname)
 
     def get_metadata_list(self, mtype):
         """ get all metadata files for the specified type (clients or
@@ -155,7 +164,13 @@ class Validate(Bcfg2.Server.Lint.ServerlessPlugin):
         # listed in self.files, though, there's really nothing we can
         # do to guess what a file in Metadata is
         if rv:
-            rv.extend(self.follow_xinclude(rv[0]))
+            try:
+                rv.extend(self.follow_xinclude(rv[0]))
+            except lxml.etree.XMLSyntaxError:
+                e = sys.exc_info()[1]
+                self.LintError("xml-failed-to-parse",
+                               "%s fails to parse:\n%s" % (rv[0], e))
+
 
         return rv
 

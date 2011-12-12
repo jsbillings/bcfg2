@@ -19,8 +19,19 @@ except:
         raise ImportError
 
 
-class OhaiCache(object):
+probecode = """#!/bin/sh
 
+export PATH=$PATH:/sbin:/usr/sbin
+
+if type ohai >& /dev/null; then
+    ohai
+else
+    # an empty dict, so "'foo' in metadata.Ohai" tests succeed
+    echo '{}'
+fi
+"""
+
+class OhaiCache(object):
     def __init__(self, dirname):
         self.dirname = dirname
         self.cache = dict()
@@ -62,7 +73,7 @@ class Ohai(Bcfg2.Server.Plugin.Plugin,
         Bcfg2.Server.Plugin.Connector.__init__(self)
         self.probe = lxml.etree.Element('probe', name='Ohai', source='Ohai',
                                         interpreter='/bin/sh')
-        self.probe.text = 'ohai'
+        self.probe.text = probecode
         try:
             os.stat(self.data)
         except:

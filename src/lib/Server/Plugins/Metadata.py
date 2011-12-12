@@ -10,7 +10,9 @@ import lxml.etree
 import os
 import os.path
 import socket
+import sys
 import time
+
 import Bcfg2.Server.FileMonitor
 import Bcfg2.Server.Plugin
 
@@ -99,7 +101,8 @@ class XMLMetadataConfig(object):
         tmpfile = "%s.new" % fname
         try:
             datafile = open("%s" % tmpfile, 'w')
-        except IOError, e:
+        except IOError:
+            e = sys.exc_info()[1]
             self.logger.error("Failed to write %s: %s" % (tmpfile, e))
             raise MetadataRuntimeError
         # prep data
@@ -221,6 +224,7 @@ class Metadata(Bcfg2.Server.Plugin.Plugin,
     __version__ = '$Id$'
     __author__ = 'bcfg-dev@mcs.anl.gov'
     name = "Metadata"
+    sort_order = 500
 
     def __init__(self, core, datastore, watch_clients=True):
         Bcfg2.Server.Plugin.Plugin.__init__(self, core, datastore)
@@ -569,11 +573,24 @@ class Metadata(Bcfg2.Server.Plugin.Plugin,
         self.clients[client] = profile
         self.clients_xml.write()
 
-    def resolve_client(self, addresspair):
+    def resolve_client(self, addresspair, cleanup_cache=False):
         """Lookup address locally or in DNS to get a hostname."""
         if addresspair in self.session_cache:
+            # client _was_ cached, so there can be some expired entries
+            # we need to clean them up to avoid potentially infinite memory swell
+            cache_ttl = 90
+            if cleanup_cache:
+                # remove entries for this client's IP address with _any_ port numbers
+                # - perhaps a priority queue could be faster?
+                curtime = time.time()
+                for addrpair in self.session_cache.keys():
+                     if addresspair[0] == addrpair[0]:
+                         (stamp, _) = self.session_cache[addrpair]
+                         if curtime - stamp > cache_ttl:
+                             del self.session_cache[addrpair]
+            # return the cached data
             (stamp, uuid) = self.session_cache[addresspair]
-            if time.time() - stamp < 90:
+            if time.time() - stamp < cache_ttl:
                 return self.session_cache[addresspair][1]
         address = addresspair[0]
         if address in self.addresses:
@@ -739,6 +756,9 @@ class Metadata(Bcfg2.Server.Plugin.Plugin,
             return False
 
         if id_method == 'cert' and auth_type != 'cert+password':
+            # remember the cert-derived client name for this connection
+            if client in self.floating:
+                self.session_cache[address] = (time.time(), client)
             # we are done if cert+password not required
             return True
 
@@ -765,7 +785,7 @@ class Metadata(Bcfg2.Server.Plugin.Plugin,
                                   (address[0]))
                 return False
         # populate the session cache
-        if user != 'root':
+        if user.decode('utf-8') != 'root':
             self.session_cache[address] = (time.time(), client)
         return True
 
@@ -781,8 +801,20 @@ class Metadata(Bcfg2.Server.Plugin.Plugin,
             xdict['xquery'][0].set('auth', 'cert')
             self.clients_xml.write_xml(xdict['filename'], xdict['xmltree'])
 
-    def viz(self, hosts, bundles, key, colors):
+    def viz(self, hosts, bundles, key, only_client, colors):
         """Admin mode viz support."""
+        if only_client:
+            clientmeta = self.core.build_metadata(only_client)
+
+        def include_client(client):
+            return not only_client or client != only_client
+
+        def include_bundle(bundle):
+            return not only_client or bundle in clientmeta.bundles
+
+        def include_group(group):
+            return not only_client or group in clientmeta.groups
+        
         groups_tree = lxml.etree.parse(self.data + "/groups.xml")
         try:
             groups_tree.xinclude()
@@ -790,7 +822,6 @@ class Metadata(Bcfg2.Server.Plugin.Plugin,
             self.logger.error("Failed to process XInclude for file %s" % dest)
         groups = groups_tree.getroot()
         categories = {'default': 'grey83'}
-        instances = {}
         viz_str = ""
         egroups = groups.findall("Group") + groups.findall('.//Groups/Group')
         for group in egroups:
@@ -800,8 +831,11 @@ class Metadata(Bcfg2.Server.Plugin.Plugin,
         if None in categories:
             del categories[None]
         if hosts:
+            instances = {}
             clients = self.clients
             for client, profile in list(clients.items()):
+                if include_client(client):
+                    continue
                 if profile in instances:
                     instances[profile].append(client)
                 else:
@@ -816,7 +850,8 @@ class Metadata(Bcfg2.Server.Plugin.Plugin,
             bundles = []
             [bundles.append(bund.get('name')) \
                  for bund in groups.findall('.//Bundle') \
-                 if bund.get('name') not in bundles]
+                 if bund.get('name') not in bundles \
+                     and include_bundle(bund.get('name'))]
             bundles.sort()
             for bundle in bundles:
                 viz_str += '''\t"bundle-%s" [ label="%s", shape="septagon"];\n''' \
@@ -828,20 +863,22 @@ class Metadata(Bcfg2.Server.Plugin.Plugin,
             else:
                 style = "filled"
             gseen.append(group.get('name'))
-            viz_str += '\t"group-%s" [label="%s", style="%s", fillcolor=%s];\n' % \
-                (group.get('name'), group.get('name'), style, group.get('color'))
-            if bundles:
-                for bundle in group.findall('Bundle'):
-                    viz_str += '\t"group-%s" -> "bundle-%s";\n' % \
-                        (group.get('name'), bundle.get('name'))
+            if include_group(group.get('name')):
+                viz_str += '\t"group-%s" [label="%s", style="%s", fillcolor=%s];\n' % \
+                           (group.get('name'), group.get('name'), style, group.get('color'))
+                if bundles:
+                    for bundle in group.findall('Bundle'):
+                        viz_str += '\t"group-%s" -> "bundle-%s";\n' % \
+                                   (group.get('name'), bundle.get('name'))
         gfmt = '\t"group-%s" [label="%s", style="filled", fillcolor="grey83"];\n'
         for group in egroups:
             for parent in group.findall('Group'):
-                if parent.get('name') not in gseen:
+                if parent.get('name') not in gseen and include_group(parent.get('name')):
                     viz_str += gfmt % (parent.get('name'), parent.get('name'))
                     gseen.append(parent.get("name"))
-                viz_str += '\t"group-%s" -> "group-%s" ;\n' % \
-                    (group.get('name'), parent.get('name'))
+                if include_group(group.get('name')):
+                    viz_str += '\t"group-%s" -> "group-%s" ;\n' % \
+                               (group.get('name'), parent.get('name'))
         if key:
             for category in categories:
                 viz_str += '''\t"''' + category + '''" [label="''' + category + \

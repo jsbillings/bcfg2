@@ -1,4 +1,4 @@
-In chronological order:
+In no particular order:
 
 - Narayan Desai <desai@mcs.anl.gov> has written most of Bcfg2,
   including all parts not explicitly mentioned in this file.
@@ -59,3 +59,6 @@ In chronological order:
   which was used in the Bcfg2 client.
 
 - Michael Jinks <mjinks@uchicago.edu> wrote the gentoo tool drivers.
+
+- Chris St. Pierre <stpierreca@ornl.gov> (re)wrote bcfg2-lint and has
+  made other miscellaneous contributions.

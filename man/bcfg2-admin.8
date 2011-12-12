@@ -55,7 +55,7 @@ Build structure entries based on client statistics extra entries.
 Install configuration information into repo based on client bad
 entries.
 .RE
-.B report [init|load_stats|purge|scrub|update]
+.B reports [init|load_stats|purge|scrub|update]
 .RS
 Interact with the dynamic reporting system.
 .RE
@@ -67,7 +67,7 @@ Interact with the Snapshots database.
 .RS
 Remove unused files from repository.
 .RE
-.B viz [-H] [-b] [-k] [-o png-file] [-r]
+.B viz [-H] [-b] [-k] [-o png-file]
 .RS
 Create a graphviz diagram of client, group and bundle information.
 .RE
@@ -154,7 +154,7 @@ Specify the type of the entry to pull.
 .RS
 Specify the name of the entry to pull.
 .RE
-.SH REPORT OPTIONS
+.SH REPORTS OPTIONS
 .PP
 .B init
 .RS
@@ -164,11 +164,11 @@ Initialize the database.
 .RS
 Load statistics data.
 .RE
-.B purge
+.B purge [--client [n]] [--days [n]] [--expired]
 .RS
-Purge records.
+Purge historic and expired data.
 .RE
-.B scrub [--client [n]] [--days [n]] [--expired]
+.B scrub
 .RS
 Scrub the database for duplicate reasons and orphaned entries.
 .RE
@@ -207,10 +207,6 @@ Include bundles in diagram.
 .B \-o <output file>
 .RS
 Write to outfile file instead of stdout.
-.RE
-.B \-r
-.RS
-Produce raw graphviz output.
 .RE
 .B \-k
 .RS

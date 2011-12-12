@@ -1,48 +1,50 @@
+import os
+import sys
 import copy
+import logging
 import lxml.etree
-
 import Bcfg2.Server.Plugin
 
+logger = logging.getLogger('Bcfg2.Plugins.Properties')
 
 class PropertyFile(Bcfg2.Server.Plugin.StructFile):
     """Class for properties files."""
-    def Index(self):
-        """Build internal data structures."""
-        if type(self.data) is not lxml.etree._Element:
+    def write(self):
+        """ Write the data in this data structure back to the property
+        file """
+        if self.validate_data():
             try:
-                self.data = lxml.etree.XML(self.data)
-            except lxml.etree.XMLSyntaxError:
-                Bcfg2.Server.Plugin.logger.error("Failed to parse %s" %
-                                                 self.name)
+                open(self.name,
+                     "wb").write(lxml.etree.tostring(self.xdata,
+                                                     pretty_print=True))
+                return True
+            except IOError:
+                err = sys.exc_info()[1]
+                logger.error("Failed to write %s: %s" % (self.name, err))
+                return False
+        else:
+            return False
 
-        self.fragments = {}
-        work = {lambda x: True: self.data.getchildren()}
-        while work:
-            (predicate, worklist) = work.popitem()
-            self.fragments[predicate] = \
-                                      [item for item in worklist
-                                       if (item.tag != 'Group' and
-                                           item.tag != 'Client' and
-                                           not isinstance(item,
-                                                          lxml.etree._Comment))]
-            for item in worklist:
-                cmd = None
-                if item.tag == 'Group':
-                    if item.get('negate', 'false').lower() == 'true':
-                        cmd = "lambda x:'%s' not in x.groups and predicate(x)"
-                    else:
-                        cmd = "lambda x:'%s' in x.groups and predicate(x)"
-                elif item.tag == 'Client':
-                    if item.get('negate', 'false').lower() == 'true':
-                        cmd = "lambda x:x.hostname != '%s' and predicate(x)"
-                    else:
-                        cmd = "lambda x:x.hostname == '%s' and predicate(x)"
-                # else, ignore item
-                if cmd is not None:
-                    newpred = eval(cmd % item.get('name'),
-                                   {'predicate':predicate})
-                    work[newpred] = item.getchildren()
+    def validate_data(self):
+        """ ensure that the data in this object validates against the
+        XML schema for this property file (if a schema exists) """
+        schemafile = self.name.replace(".xml", ".xsd")
+        if os.path.exists(schemafile):
+            try:
+                schema = lxml.etree.XMLSchema(file=schemafile)
+            except:
+                logger.error("Failed to process schema for %s" % self.name)
+                return False
+        else:
+            # no schema exists
+            return True
 
+        if not schema.validate(self.xdata):
+            logger.error("Data for %s fails to validate; run bcfg2-lint for "
+                         "more details" % self.name)
+            return False
+        else:
+            return True
 
 
 class PropDirectoryBacked(Bcfg2.Server.Plugin.DirectoryBacked):
@@ -63,9 +65,10 @@ class Properties(Bcfg2.Server.Plugin.Plugin,
         Bcfg2.Server.Plugin.Connector.__init__(self)
         try:
             self.store = PropDirectoryBacked(self.data, core.fam)
-        except OSError, e:
-            Bcfg2.Server.Plugin.logger.error("Error while creating Properties "
-                                             "store: %s %s" % (e.strerror,e.filename))
+        except OSError:
+            e = sys.exc_info()[1]
+            self.logger.error("Error while creating Properties store: %s %s" %
+                              (e.strerror, e.filename))
             raise Bcfg2.Server.Plugin.PluginInitError
 
     def get_additional_data(self, _):

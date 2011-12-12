@@ -5,27 +5,39 @@ import copy
 import logging
 import lxml.etree
 import os
+import os.path
 import pickle
 import posixpath
 import re
-import Queue
+import sys
 import threading
 
 from lxml.etree import XML, XMLSyntaxError
 
 import Bcfg2.Options
 
+# py3k compatibility
+if sys.hexversion >= 0x03000000:
+    from functools import reduce
+    from io import FileIO as BUILTIN_FILE_TYPE
+else:
+    BUILTIN_FILE_TYPE = file
+from Bcfg2.Bcfg2Py3k import Queue
+from Bcfg2.Bcfg2Py3k import Empty
+from Bcfg2.Bcfg2Py3k import Full
+
 # grab default metadata info from bcfg2.conf
 opts = {'owner': Bcfg2.Options.MDATA_OWNER,
         'group': Bcfg2.Options.MDATA_GROUP,
         'important': Bcfg2.Options.MDATA_IMPORTANT,
         'perms': Bcfg2.Options.MDATA_PERMS,
-        'paranoid': Bcfg2.Options.MDATA_PARANOID}
+        'paranoid': Bcfg2.Options.MDATA_PARANOID,
+        'sensitive': Bcfg2.Options.MDATA_SENSITIVE}
 mdata_setup = Bcfg2.Options.OptionParser(opts)
 mdata_setup.parse([])
 del mdata_setup['args']
 
-logger = logging.getLogger('Bcfg2.Plugin')
+logger = logging.getLogger('Bcfg2.Server.Plugin')
 
 default_file_metadata = mdata_setup
 
@@ -36,7 +48,8 @@ info_regex = re.compile( \
     'mtime:(\s)*(?P<mtime>\w+)|' +
     'owner:(\s)*(?P<owner>\S+)|' +
     'paranoid:(\s)*(?P<paranoid>\S+)|' +
-    'perms:(\s)*(?P<perms>\w+)|')
+    'perms:(\s)*(?P<perms>\w+)|' +
+    'sensitive:(\s)*(?P<sensitive>\S+)|')
 
 
 class PluginInitError(Exception):
@@ -69,7 +82,17 @@ class Plugin(object):
     deprecated = False
     conflicts = []
 
+    # Default sort_order to 500. Plugins of the same type are
+    # processed in order of ascending sort_order value. Plugins with
+    # the same sort_order are sorted alphabetically by their name.
+    sort_order = 500
+
     def __init__(self, core, datastore):
+        """Initialize the plugin.
+        
+        :param core: the Bcfg2.Server.Core initializing the plugin
+        :param datastore: the filesystem path of Bcfg2's repository
+        """
         object.__init__(self)
         self.Entries = {}
         self.core = core
@@ -169,7 +192,7 @@ class ThreadedStatistics(Statistics,
         threading.Thread.__init__(self)
         # Event from the core signaling an exit
         self.terminate = core.terminate
-        self.work_queue = Queue.Queue(100000)
+        self.work_queue = Queue(100000)
         self.pending_file = "%s/etc/%s.pending" % (datastore, self.__class__.__name__)
         self.daemon = True
         self.start()
@@ -184,7 +207,7 @@ class ThreadedStatistics(Statistics,
                     pending_data.append((metadata.hostname, lxml.etree.tostring(data)))
                 except:
                     self.logger.warning("Dropping interaction for %s" % metadata.hostname)
-        except Queue.Empty:
+        except Empty:
             pass
 
         try:
@@ -204,7 +227,8 @@ class ThreadedStatistics(Statistics,
             savefile = open(self.pending_file, 'r')
             pending_data = pickle.load(savefile)
             savefile.close()
-        except Exception, e:
+        except Exception:
+            e = sys.exc_info()[1]
             self.logger.warning("Failed to load pending data: %s" % e)
         for (pmetadata, pdata) in pending_data:
             # check that shutdown wasnt called early
@@ -224,10 +248,11 @@ class ThreadedStatistics(Statistics,
                         return False
 
                 self.work_queue.put_nowait((metadata, lxml.etree.fromstring(pdata)))
-            except Queue.Full:
+            except Full:
                 self.logger.warning("Queue.Full: Failed to load queue data")
                 break
-            except lxml.etree.LxmlError, lxml_error:
+            except lxml.etree.LxmlError:
+                lxml_error = sys.exc_info()[1]
                 self.logger.error("Unable to load save interaction: %s" % lxml_error)
             except Bcfg2.Server.Plugins.Metadata.MetadataConsistencyError:
                 self.logger.error("Unable to load metadata for save interaction: %s" % pmetadata)
@@ -244,9 +269,10 @@ class ThreadedStatistics(Statistics,
         while not self.terminate.isSet():
             try:
                 (xdata, client) = self.work_queue.get(block=True, timeout=2)
-            except Queue.Empty:
+            except Empty:
                 continue
-            except Exception, e:
+            except Exception:
+                e = sys.exc_info()[1]
                 self.logger.error("ThreadedStatistics: %s" % e)
                 continue
             self.handle_statistic(xdata, client)
@@ -258,7 +284,7 @@ class ThreadedStatistics(Statistics,
         try:
             self.work_queue.put_nowait((metadata, copy.deepcopy(data)))
             warned = False
-        except Queue.Full:
+        except Full:
             if not warned:
                 self.logger.warning("%s: Queue is full.  Dropping interactions." % self.__class__.__name__)
             warned = True
@@ -336,10 +362,11 @@ class FileBacked(object):
         if event and event.code2str() not in ['exists', 'changed', 'created']:
             return
         try:
-            self.data = file(self.name).read()
+            self.data = BUILTIN_FILE_TYPE(self.name).read()
             self.Index()
         except IOError:
-            logger.error("Failed to read file %s" % (self.name))
+            err = sys.exc_info()[1]
+            logger.error("Failed to read file %s: %s" % (self.name, err))
 
     def Index(self):
         """Update local data structures based on current file state"""
@@ -351,13 +378,35 @@ class DirectoryBacked(object):
     __child__ = FileBacked
     patterns = re.compile('.*')
 
-    def __init__(self, name, fam):
+    def __init__(self, data, fam):
+        """Initialize the DirectoryBacked object.
+
+        :param self: the object being initialized.
+        :param data: the path to the data directory that will be
+        monitored.
+        :param fam: The FileMonitor object used to receive
+        notifications of changes.  
+        """
         object.__init__(self)
-        self.name = name
+
+        self.data = os.path.normpath(data)
         self.fam = fam
+
+        # self.entries contains information about the files monitored
+        # by this object.... The keys of the dict are the relative
+        # paths to the files. The values are the objects (of type
+        # __child__) that handle their contents.
         self.entries = {}
-        self.inventory = False
-        fam.AddMonitor(name, self)
+
+        # self.handles contains information about the directories
+        # monitored by this object. The keys of the dict are the
+        # values returned by the initial fam.AddMonitor() call (which
+        # appear to be integers). The values are the relative paths of
+        # the directories.
+        self.handles = {}
+
+        # Monitor everything in the plugin's directory
+        self.add_directory_monitor('')
 
     def __getitem__(self, key):
         return self.entries[key]
@@ -365,46 +414,131 @@ class DirectoryBacked(object):
     def __iter__(self):
         return iter(list(self.entries.items()))
 
-    def AddEntry(self, name):
-        """Add new entry to data structures upon file creation."""
-        if name == '':
-            logger.info("got add for empty name")
-        elif name in self.entries:
-            self.entries[name].HandleEvent()
-        else:
-            if ((name[-1] == '~') or
-                (name[:2] == '.#') or
-                (name[-4:] == '.swp') or
-                (name in ['SCCS', '.svn'])):
+    def add_directory_monitor(self, relative):
+        """Add a new directory to FAM structures for monitoring.
+
+        :param relative: Path name to monitor. This must be relative
+        to the plugin's directory. An empty string value ("") will
+        cause the plugin directory itself to be monitored.
+        """
+        dirpathname = os.path.join(self.data, relative)
+        if relative not in self.handles.values():
+            if not posixpath.isdir(dirpathname):
+                logger.error("Failed to open directory %s" % (dirpathname))
                 return
-            if not self.patterns.match(name):
-                return
-            self.entries[name] = self.__child__('%s/%s' % (self.name, name))
-            self.entries[name].HandleEvent()
+            reqid = self.fam.AddMonitor(dirpathname, self)
+            self.handles[reqid] = relative
+
+    def add_entry(self, relative, event):
+        """Add a new file to our structures for monitoring.
+
+        :param relative: Path name to monitor. This must be relative
+        to the plugin's directory.
+        :param event: File Monitor event that caused this entry to be
+        added.
+        """
+        self.entries[relative] = self.__child__(os.path.join(self.data,
+                                                             relative))
+        self.entries[relative].HandleEvent(event)
 
     def HandleEvent(self, event):
-        """Propagate fam events to underlying objects."""
+        """Handle FAM/Gamin events.
+        
+        This method is invoked by FAM/Gamin when it detects a change
+        to a filesystem object we have requsted to be monitored.
+
+        This method manages the lifecycle of events related to the
+        monitored objects, adding them to our indiciess and creating
+        objects of type __child__ that actually do the domain-specific
+        processing. When appropriate, it propogates events those
+        objects by invoking their HandleEvent in turn.
+        """
         action = event.code2str()
-        if event.filename == '':
-            logger.info("Got event for blank filename")
+
+        # Clean up the absolute path names passed in
+        event.filename = os.path.normpath(event.filename)
+        if event.filename.startswith(self.data):
+            event.filename = event.filename[len(self.data)+1:]
+
+        # Exclude events for actions we don't care about
+        if action == 'endExist':
             return
-        if action == 'exists':
-            if event.filename != self.name:
-                self.AddEntry(event.filename)
-        elif action == 'created':
-            self.AddEntry(event.filename)
-        elif action == 'changed':
-            if event.filename in self.entries:
-                self.entries[event.filename].HandleEvent(event)
-        elif action == 'deleted':
-            if event.filename in self.entries:
-                del self.entries[event.filename]
-        elif action in ['endExist']:
-            pass
+
+        if event.requestID not in self.handles:
+            logger.warn("Got %s event with unknown handle (%s) for %s"
+                        % (action, event.requestID, abspath))
+            return
+
+        # Calculate the absolute and relative paths this event refers to
+        abspath = os.path.join(self.data, self.handles[event.requestID],
+                               event.filename)
+        relpath = os.path.join(self.handles[event.requestID], event.filename)
+
+        if action == 'deleted':
+            for key in self.entries.keys():
+                if key.startswith(relpath):
+                    del self.entries[key]
+            # We remove values from self.entries, but not
+            # self.handles, because the FileMonitor doesn't stop
+            # watching a directory just because it gets deleted. If it
+            # is recreated, we will start getting notifications for it
+            # again without having to add a new monitor.
+        elif posixpath.isdir(abspath):
+            # Deal with events for directories
+            if action in ['exists', 'created']:
+                self.add_directory_monitor(relpath)
+            elif action == 'changed':
+                if relpath in self.entries:
+                    # Ownerships, permissions or timestamps changed on
+                    # the directory. None of these should affect the
+                    # contents of the files, though it could change
+                    # our ability to access them.
+                    #
+                    # It seems like the right thing to do is to cancel
+                    # monitoring the directory and then begin
+                    # monitoring it again. But the current FileMonitor
+                    # class doesn't support canceling, so at least let
+                    # the user know that a restart might be a good
+                    # idea.
+                    logger.warn("Directory properties for %s changed, please " +
+                                " consider restarting the server" % (abspath))
+                else:
+                    # Got a "changed" event for a directory that we
+                    # didn't know about. Go ahead and treat it like a
+                    # "created" event, but log a warning, because this
+                    # is unexpected.
+                    logger.warn("Got %s event for unexpected dir %s" % (action,
+                                                                        abspath))
+                    self.add_directory_monitor(relpath)
+            else:
+                logger.warn("Got unknown dir event %s %s %s" % (event.requestID,
+                                                                event.code2str(),
+                                                                abspath))
         else:
-            print("Got unknown event %s %s %s" % (event.requestID,
-                                                  event.code2str(),
-                                                  event.filename))
+            # Deal with events for non-directories
+            if ((event.filename[-1] == '~') or
+                (event.filename[:2] == '.#') or
+                (event.filename[-4:] == '.swp') or
+                (event.filename in ['SCCS', '.svn', '4913']) or
+                (not self.patterns.match(event.filename))):
+                return
+            if action in ['exists', 'created']:
+                self.add_entry(relpath, event)
+            elif action == 'changed':
+                if relpath in self.entries:
+                    self.entries[relpath].HandleEvent(event)
+                else:
+                    # Got a "changed" event for a file that we didn't
+                    # know about. Go ahead and treat it like a
+                    # "created" event, but log a warning, because this
+                    # is unexpected.
+                    logger.warn("Got %s event for unexpected file %s" % (action,
+                                                                         abspath))
+                    self.add_entry(relpath, event)
+            else:
+                logger.warn("Got unknown file event %s %s %s" % (event.requestID,
+                                                                 event.code2str(),
+                                                                 abspath))
 
 
 class XMLFileBacked(FileBacked):
@@ -422,12 +556,13 @@ class XMLFileBacked(FileBacked):
     def Index(self):
         """Build local data structures."""
         try:
-            xdata = XML(self.data)
+            self.xdata = XML(self.data)
         except XMLSyntaxError:
             logger.error("Failed to parse %s" % (self.name))
             return
-        self.label = xdata.attrib[self.__identifier__]
-        self.entries = xdata.getchildren()
+        self.entries = self.xdata.getchildren()
+        if self.__identifier__ is not None:
+            self.label = self.xdata.attrib[self.__identifier__]
 
     def __iter__(self):
         return iter(self.entries)
@@ -437,58 +572,83 @@ class SingleXMLFileBacked(XMLFileBacked):
     """This object is a coherent cache for an independent XML file."""
     def __init__(self, filename, fam):
         XMLFileBacked.__init__(self, filename)
-        fam.AddMonitor(filename, self)
+        self.extras = []
+        self.fam = fam
+        self.fam.AddMonitor(filename, self)
+
+    def Index(self):
+        """Build local data structures."""
+        try:
+            self.xdata = lxml.etree.XML(self.data, base_url=self.name)
+        except lxml.etree.XMLSyntaxError:
+            err = sys.exc_info()[1]
+            logger.error("Failed to parse %s: %s" % (self.name, err))
+            raise Bcfg2.Server.Plugin.PluginInitError
+
+        included = [ent.get('href')
+                    for ent in self.xdata.findall('./{http://www.w3.org/2001/XInclude}include')]
+        if included:
+            for name in included:
+                if name not in self.extras:
+                    self.fam.AddMonitor(os.path.join(os.path.dirname(self.name),
+                                                     name),
+                                        self)
+                    self.extras.append(name)
+            try:
+                self.xdata.getroottree().xinclude()
+            except lxml.etree.XIncludeError:
+                err = sys.exc_info()[1]
+                logger.error("XInclude failed on %s: %s" % (self.name, err))
+
+
+        self.entries = self.xdata.getchildren()
+        if self.__identifier__ is not None:
+            self.label = self.xdata.attrib[self.__identifier__]
 
 
 class StructFile(XMLFileBacked):
     """This file contains a set of structure file formatting logic."""
+    __identifier__ = None
+    
     def __init__(self, name):
         XMLFileBacked.__init__(self, name)
-        self.fragments = {}
 
-    def Index(self):
-        """Build internal data structures."""
-        try:
-            xdata = lxml.etree.XML(self.data)
-        except lxml.etree.XMLSyntaxError:
-            logger.error("Failed to parse file %s" % self.name)
-            return
-        self.fragments = {}
-        work = {lambda x: True: xdata.getchildren()}
-        while work:
-            (predicate, worklist) = work.popitem()
-            self.fragments[predicate] = \
-                                      [item for item in worklist
-                                       if (item.tag != 'Group' and
-                                           item.tag != 'Client' and
-                                           not isinstance(item,
-                                                          lxml.etree._Comment))]
-            for item in worklist:
-                cmd = None
-                if item.tag == 'Group':
-                    if item.get('negate', 'false').lower() == 'true':
-                        cmd = "lambda x:'%s' not in x.groups and predicate(x)"
-                    else:
-                        cmd = "lambda x:'%s' in x.groups and predicate(x)"
-                elif item.tag == 'Client':
-                    if item.get('negate', 'false').lower() == 'true':
-                        cmd = "lambda x:x.hostname != '%s' and predicate(x)"
-                    else:
-                        cmd = "lambda x:x.hostname == '%s' and predicate(x)"
-                # else, ignore item
-                if cmd is not None:
-                    newpred = eval(cmd % item.get('name'),
-                                   {'predicate':predicate})
-                    work[newpred] = item.getchildren()
-
+    def _match(self, item, metadata):
+        """ recursive helper for Match() """
+        if isinstance(item, lxml.etree._Comment):
+            return []
+        elif item.tag == 'Group':
+            rv = []
+            if ((item.get('negate', 'false').lower() == 'true' and
+                 item.get('name') not in metadata.groups) or
+                (item.get('negate', 'false').lower() == 'false' and
+                 item.get('name') in metadata.groups)):
+                for child in item.iterchildren():
+                    rv.extend(self._match(child, metadata))
+            return rv
+        elif item.tag == 'Client':
+            rv = []
+            if ((item.get('negate', 'false').lower() == 'true' and
+                 item.get('name') != metadata.hostname) or
+                (item.get('negate', 'false').lower() == 'false' and
+                 item.get('name') == metadata.hostname)):
+                for child in item.iterchildren():
+                    rv.extend(self._match(child, metadata))
+            return rv
+        else:
+            rv = copy.deepcopy(item)
+            for child in rv.iterchildren():
+                rv.remove(child)
+            for child in item.iterchildren():
+                rv.extend(self._match(child, metadata))
+            return [rv]
+            
     def Match(self, metadata):
         """Return matching fragments of independent."""
-        matching = [frag for (pred, frag) in list(self.fragments.items())
-                    if pred(metadata)]
-        if matching:
-            return reduce(lambda x, y: x + y, matching)
-        logger.error("File %s got null match" % (self.name))
-        return []
+        rv = []
+        for child in self.entries:
+            rv.extend(self._match(child, metadata))
+        return rv
 
 
 class INode:
@@ -496,10 +656,10 @@ class INode:
     LNodes provide lists of things available at a particular
     group intersection.
     """
-    raw = {'Client': "lambda x:'%s' == x.hostname and predicate(x)",
-           'Group': "lambda x:'%s' in x.groups and predicate(x)"}
-    nraw = {'Client': "lambda x:'%s' != x.hostname and predicate(x)",
-            'Group': "lambda x:'%s' not in x.groups and predicate(x)"}
+    raw = {'Client': "lambda m, e:'%(name)s' == m.hostname and predicate(m, e)",
+           'Group': "lambda m, e:'%(name)s' in m.groups and predicate(m, e)"}
+    nraw = {'Client': "lambda m, e:'%(name)s' != m.hostname and predicate(m, e)",
+            'Group': "lambda m, e:'%(name)s' not in m.groups and predicate(m, e)"}
     containers = ['Group', 'Client']
     ignore = []
 
@@ -507,7 +667,7 @@ class INode:
         self.data = data
         self.contents = {}
         if parent == None:
-            self.predicate = lambda x: True
+            self.predicate = lambda m, d: True
         else:
             predicate = parent.predicate
             if data.get('negate', 'false') in ['true', 'True']:
@@ -515,7 +675,8 @@ class INode:
             else:
                 psrc = self.raw
             if data.tag in list(psrc.keys()):
-                self.predicate = eval(psrc[data.tag] % (data.get('name')),
+                self.predicate = eval(psrc[data.tag] %
+                                      {'name': data.get('name')},
                                       {'predicate': predicate})
             else:
                 raise Exception
@@ -538,9 +699,9 @@ class INode:
                 except KeyError:
                     idict[item.tag] = [item.get('name')]
 
-    def Match(self, metadata, data):
+    def Match(self, metadata, data, entry=lxml.etree.Element("None")):
         """Return a dictionary of package mappings."""
-        if self.predicate(metadata):
+        if self.predicate(metadata, entry):
             for key in self.contents:
                 try:
                     data[key].update(self.contents[key])
@@ -548,7 +709,18 @@ class INode:
                     data[key] = {}
                     data[key].update(self.contents[key])
             for child in self.children:
-                child.Match(metadata, data)
+                child.Match(metadata, data, entry=entry)
+
+
+class InfoNode (INode):
+    """ INode implementation that includes <Path> tags """
+    raw = {'Client': "lambda m, e:'%(name)s' == m.hostname and predicate(m, e)",
+           'Group': "lambda m, e:'%(name)s' in m.groups and predicate(m, e)",
+           'Path': "lambda m, e:('%(name)s' == e.get('name') or '%(name)s' == e.get('realname')) and predicate(m, e)"}
+    nraw = {'Client': "lambda m, e:'%(name)s' != m.hostname and predicate(m, e)",
+            'Group': "lambda m, e:'%(name)s' not in m.groups and predicate(m, e)",
+            'Path': "lambda m, e:('%(name)s' != e.get('name') and '%(name)s' != e.get('realname')) and predicate(m, e)"}
+    containers = ['Group', 'Client', 'Path']
 
 
 class XMLSrc(XMLFileBacked):
@@ -567,7 +739,7 @@ class XMLSrc(XMLFileBacked):
     def HandleEvent(self, _=None):
         """Read file upon update."""
         try:
-            data = file(self.name).read()
+            data = BUILTIN_FILE_TYPE(self.name).read()
         except IOError:
             logger.error("Failed to read file %s" % (self.name))
             return
@@ -583,7 +755,8 @@ class XMLSrc(XMLFileBacked):
             self.priority = int(xdata.get('priority'))
         except (ValueError, TypeError):
             if not self.noprio:
-                logger.error("Got bogus priority %s for file %s" % (xdata.get('priority'), self.name))
+                logger.error("Got bogus priority %s for file %s" %
+                             (xdata.get('priority'), self.name))
         del xdata, data
 
     def Cache(self, metadata):
@@ -596,6 +769,10 @@ class XMLSrc(XMLFileBacked):
                 return
             self.pnode.Match(metadata, cache[1])
             self.cache = cache
+
+
+class InfoXML (XMLSrc):
+    __node__ = InfoNode
 
 
 class XMLDirectoryBacked(DirectoryBacked):
@@ -629,16 +806,26 @@ class PrioDir(Plugin, Generator, XMLDirectoryBacked):
                     except KeyError:
                         self.Entries[itype] = {child: self.BindEntry}
 
+    def _matches(self, entry, metadata, rules):
+        return entry.get('name') in rules
+
     def BindEntry(self, entry, metadata):
-        """Check package lists of package entries."""
-        [src.Cache(metadata) for src in list(self.entries.values())]
-        name = entry.get('name')
-        if not src.cache:
-            self.logger.error("Called before data loaded")
-            raise PluginExecutionError
+        attrs = self.get_attrs(entry, metadata)
+        for key, val in list(attrs.items()):
+            entry.attrib[key] = val
+        
+    def get_attrs(self, entry, metadata):
+        """ get a list of attributes to add to the entry during the bind """
+        for src in list(self.entries.values()):
+            cached = src.Cache(metadata)
+            if cached == False:
+                self.logger.error("Called before data loaded")
+                raise PluginExecutionError
         matching = [src for src in list(self.entries.values())
-                    if src.cache and entry.tag in src.cache[1]
-                    and name in src.cache[1][entry.tag]]
+                    if (src.cache and
+                        entry.tag in src.cache[1] and
+                        self._matches(entry, metadata,
+                                      src.cache[1][entry.tag]))]
         if len(matching) == 0:
             raise PluginExecutionError
         elif len(matching) == 1:
@@ -655,13 +842,18 @@ class PrioDir(Plugin, Generator, XMLDirectoryBacked):
                 raise PluginExecutionError
             index = prio.index(max(prio))
 
-        data = matching[index].cache[1][entry.tag][name]
+        for rname in list(matching[index].cache[1][entry.tag].keys()):
+            if self._matches(entry, metadata, [rname]):
+                data = matching[index].cache[1][entry.tag][rname]
+                break
         if '__text__' in data:
             entry.text = data['__text__']
         if '__children__' in data:
             [entry.append(copy.deepcopy(item)) for item in data['__children__']]
-        [entry.attrib.__setitem__(key, data[key]) for key in list(data.keys()) \
-         if not key.startswith('__')]
+
+        return dict([(key, data[key])
+                     for key in list(data.keys())
+                     if not key.startswith('__')])
 
 
 # new unified EntrySet backend
@@ -679,6 +871,9 @@ class Specificity:
         self.group = group
         self.prio = prio
         self.delta = delta
+
+    def __lt__(self, other):
+        return self.__cmp__(other) < 0
 
     def matches(self, metadata):
         return self.all or \
@@ -740,8 +935,28 @@ class EntrySet:
         self.specific = re.compile(pattern)
 
     def get_matching(self, metadata):
-        return [item for item in list(self.entries.values()) \
+        return [item for item in list(self.entries.values())
                 if item.specific.matches(metadata)]
+
+    def best_matching(self, metadata):
+        """ Return the appropriate interpreted template from the set of
+        available templates. """
+        matching = self.get_matching(metadata)
+
+        hspec = [ent for ent in matching if ent.specific.hostname]
+        if hspec:
+            return hspec[0]
+
+        gspec = [ent for ent in matching if ent.specific.group]
+        if gspec:
+            gspec.sort(self.group_sortfunc)
+            return gspec[-1]
+
+        aspec = [ent for ent in matching if ent.specific.all]
+        if aspec:
+            return aspec[0]
+
+        raise PluginExecutionError
 
     def handle_event(self, event):
         """Handle FAM events for the TemplateSet."""
@@ -802,13 +1017,14 @@ class EntrySet:
         fpath = "%s/%s" % (self.path, event.filename)
         if event.filename == 'info.xml':
             if not self.infoxml:
-                self.infoxml = XMLSrc(fpath, True)
+                self.infoxml = InfoXML(fpath, True)
             self.infoxml.HandleEvent(event)
         elif event.filename in [':info', 'info']:
             for line in open(fpath).readlines():
                 match = info_regex.match(line)
                 if not match:
-                    logger.warning("Failed to match line: %s" % line)
+                    logger.warning("Failed to match line in %s: %s" % (fpath,
+                                                                       line))
                     continue
                 else:
                     mgd = match.groupdict()
@@ -823,7 +1039,7 @@ class EntrySet:
         """Reset metadata to defaults if info or info.xml removed."""
         if event.filename == 'info.xml':
             self.infoxml = None
-        elif event.filename == 'info':
+        elif event.filename in [':info', 'info']:
             self.metadata = default_file_metadata.copy()
 
     def group_sortfunc(self, x, y):
@@ -836,7 +1052,7 @@ class EntrySet:
             entry.set(key, self.metadata[key])
         if self.infoxml:
             mdata = {}
-            self.infoxml.pnode.Match(metadata, mdata)
+            self.infoxml.pnode.Match(metadata, mdata, entry=entry)
             if 'Info' not in mdata:
                 logger.error("Failed to set metadata for file %s" % \
                              (entry.get('name')))
@@ -847,22 +1063,7 @@ class EntrySet:
     def bind_entry(self, entry, metadata):
         """Return the appropriate interpreted template from the set of available templates."""
         self.bind_info_to_entry(entry, metadata)
-        matching = self.get_matching(metadata)
-
-        hspec = [ent for ent in matching if ent.specific.hostname]
-        if hspec:
-            return hspec[0].bind_entry(entry, metadata)
-
-        gspec = [ent for ent in matching if ent.specific.group]
-        if gspec:
-            gspec.sort(self.group_sortfunc)
-            return gspec[-1].bind_entry(entry, metadata)
-
-        aspec = [ent for ent in matching if ent.specific.all]
-        if aspec:
-            return aspec[0].bind_entry(entry, metadata)
-
-        raise PluginExecutionError
+        return self.best_matching(metadata).bind_entry(entry, metadata)
 
 
 class GroupSpool(Plugin, Generator):
@@ -910,7 +1111,7 @@ class GroupSpool(Plugin, Generator):
             if not posixpath.isdir(epath):
                 # do not pass through directory events
                 self.entries[ident].handle_event(event)
-        if action == 'changed':
+        if action == 'changed' and ident in self.entries:
             self.entries[ident].handle_event(event)
         elif action == 'deleted':
             fbase = self.handles[event.requestID] + event.filename

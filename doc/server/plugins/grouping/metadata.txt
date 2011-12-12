@@ -25,6 +25,8 @@ modified from clients through use of the ``-p`` flag to ``bcfg2``.
 Clients are associated with profile groups in ``Metadata/clients.xml`` as
 shown below.
 
+.. _server-plugins-grouping-metadata-clients-xml:
+
 Metadata/clients.xml
 ====================
 
@@ -281,9 +283,9 @@ This class provides query routines for the servers Metadata.
 +==============================+================================================+===================+
 | by_name(client)              | Get ClientMetadata object for 'client'         | ClientMetadata    |
 +------------------------------+------------------------------------------------+-------------------+
-| names_by_groups(group)       |                                                |                   |
+| names_by_groups(groups)      | All client names in the list of 'groups'       | List              |
 +------------------------------+------------------------------------------------+-------------------+
-| names_by_profiles(profile)   | All clients names in 'profile'                 | List              |
+| names_by_profiles(profiles)  | All client names in the list of 'profiles'     | List              |
 +------------------------------+------------------------------------------------+-------------------+
 | all_clients()                | All known client hostnames                     | List              |
 +------------------------------+------------------------------------------------+-------------------+

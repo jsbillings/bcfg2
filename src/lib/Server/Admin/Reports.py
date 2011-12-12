@@ -1,7 +1,6 @@
 '''Admin interface for dynamic reports'''
 import Bcfg2.Logger
 import Bcfg2.Server.Admin
-import ConfigParser
 import datetime
 import os
 import logging
@@ -13,6 +12,9 @@ from Bcfg2.Server.Reports.importscript import load_stats
 from Bcfg2.Server.Reports.updatefix import update_database
 from Bcfg2.Server.Reports.utils import *
 from lxml.etree import XML, XMLSyntaxError
+
+# Compatibility import
+from Bcfg2.Bcfg2Py3k import ConfigParser
 
 # FIXME: Remove when server python dep is 2.5 or greater
 if sys.version_info >= (2, 5):
@@ -26,9 +28,10 @@ import django.core.management
 # FIXME - settings file uses a hardcoded path for /etc/bcfg2.conf
 try:
     import Bcfg2.Server.Reports.settings
-except Exception, e:
+except Exception:
+    e = sys.exc_info()[1]
     sys.stderr.write("Failed to load configuration settings. %s\n" % e)
-    sys.exit(1)
+    raise SystemExit(1)
 
 project_directory = os.path.dirname(Bcfg2.Server.Reports.settings.__file__)
 project_name = os.path.basename(project_directory)
@@ -185,7 +188,8 @@ class Reports(Bcfg2.Server.Admin.Mode):
         # Currently only reasons are a problem
         try:
             start_count = Reason.objects.count()
-        except Exception, e:
+        except Exception:
+            e = sys.exc_info()[1]
             self.log.error("Failed to load reason objects: %s" % e)
             return
         dup_reasons = []
@@ -216,7 +220,8 @@ class Reports(Bcfg2.Server.Admin.Mode):
             cursor.executemany('update reports_entries_interactions set reason_id=%s where reason_id=%s', batch_update)
             cursor.executemany('delete from reports_reason where id = %s', dup_reasons)
             transaction.set_dirty()
-        except Exception, ex:
+        except Exception:
+            ex = sys.exc_info()[1]
             self.log.error("Failed to delete reasons: %s" % ex)
             raise
 
@@ -252,6 +257,11 @@ class Reports(Bcfg2.Server.Admin.Mode):
         except (IOError, XMLSyntaxError):
             self.errExit("StatReports: Failed to parse %s" % (stats_file))
 
+        try:
+            encoding = self.cfp.get('components', 'encoding')
+        except:
+            encoding = 'UTF-8'
+
         if not clientspath:
             try:
                 clientspath = "%s/Metadata/clients.xml" % \
@@ -266,6 +276,7 @@ class Reports(Bcfg2.Server.Admin.Mode):
         try:
             load_stats(clientsdata,
                        statsdata,
+                       encoding,
                        verb,
                        self.log,
                        quick=quick,

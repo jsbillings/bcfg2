@@ -1,9 +1,11 @@
 import sys
-import xmlrpclib
 
 import Bcfg2.Options
 import Bcfg2.Proxy
 import Bcfg2.Server.Admin
+
+# Compatibility import
+from Bcfg2.Bcfg2Py3k import xmlrpclib
 
 
 class Xcmd(Bcfg2.Server.Admin.Mode):
@@ -18,10 +20,11 @@ class Xcmd(Bcfg2.Server.Admin.Mode):
             'password': Bcfg2.Options.SERVER_PASSWORD,
             'key': Bcfg2.Options.SERVER_KEY,
             'certificate': Bcfg2.Options.CLIENT_CERT,
-            'ca': Bcfg2.Options.CLIENT_CA
+            'ca': Bcfg2.Options.CLIENT_CA,
+            'timeout': Bcfg2.Options.CLIENT_TIMEOUT,
             }
         setup = Bcfg2.Options.OptionParser(optinfo)
-        setup.parse(sys.argv[2:])
+        setup.parse(args)
         Bcfg2.Proxy.RetryMethod.max_retries = 1
         proxy = Bcfg2.Proxy.ComponentProxy(setup['server'],
                                            setup['user'],
@@ -29,7 +32,7 @@ class Xcmd(Bcfg2.Server.Admin.Mode):
                                            key=setup['key'],
                                            cert=setup['certificate'],
                                            ca=setup['ca'],
-                                           timeout=180)
+                                           timeout=setup['timeout'])
         if len(setup['args']) == 0:
             print("Usage: xcmd <xmlrpc method> <optional arguments>")
             return
@@ -39,7 +42,8 @@ class Xcmd(Bcfg2.Server.Admin.Mode):
             args = tuple(setup['args'][1:])
         try:
             data = getattr(proxy, cmd)(*args)
-        except xmlrpclib.Fault, flt:
+        except xmlrpclib.Fault:
+            flt = sys.exc_info()[1]
             if flt.faultCode == 7:
                 print("Unknown method %s" % cmd)
                 return

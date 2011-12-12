@@ -4,6 +4,8 @@
 """This is chkconfig support."""
 __revision__ = '$Revision$'
 
+import os
+
 import Bcfg2.Client.Tools
 import Bcfg2.Client.XML
 
@@ -14,6 +16,7 @@ class Chkconfig(Bcfg2.Client.Tools.SvcTool):
     __execs__ = ['/sbin/chkconfig']
     __handles__ = [('Service', 'chkconfig')]
     __req__ = {'Service': ['name', 'status']}
+    os.environ['LANG'] = 'C'
 
     def get_svc_command(self, service, action):
         return "/sbin/service %s %s" % (service.get('name'), action)
@@ -57,9 +60,10 @@ class Chkconfig(Bcfg2.Client.Tools.SvcTool):
                                    entry.get('name'))[0]
             needs_modification = ((command == 'start' and pstatus) or \
                                   (command == 'stop' and not pstatus))
-            if not(self.setup.get('dryrun')) and needs_modification:
-                self.cmd.run('/sbin/service %s %s' % (entry.get('name'),
-                                                      command))
+            if (not self.setup.get('dryrun') and
+                self.setup['servicemode'] != 'disabled' and
+                needs_modification):
+                self.cmd.run(self.get_svc_command(entry, command))
                 # service was modified, so it failed
                 pstatus = False
 
@@ -80,9 +84,9 @@ class Chkconfig(Bcfg2.Client.Tools.SvcTool):
         if entry.get('mode', 'default') == 'manual':
             self.logger.info("Service %s mode set to manual. Skipping "
                              "installation." % (entry.get('name')))
-            return True
+            return False
         rcmd = "/sbin/chkconfig %s %s"
-        self.cmd.run("/sbin/chkconfig --add %s"%(entry.attrib['name']))
+        self.cmd.run("/sbin/chkconfig --add %s" % (entry.attrib['name']))
         self.logger.info("Installing Service %s" % (entry.get('name')))
         pass1 = True
         if entry.get('status') == 'off':
@@ -96,7 +100,7 @@ class Chkconfig(Bcfg2.Client.Tools.SvcTool):
     def FindExtra(self):
         """Locate extra chkconfig Services."""
         allsrv = [line.split()[0] for line in \
-                  self.cmd.run("/sbin/chkconfig --list|grep :on")[1]]
+                  self.cmd.run("/sbin/chkconfig --list 2>/dev/null|grep :on")[1]]
         self.logger.debug('Found active services:')
         self.logger.debug(allsrv)
         specified = [srv.get('name') for srv in self.getSupportedEntries()]

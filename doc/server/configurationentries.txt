@@ -22,17 +22,33 @@ entries used by Bcfg2.
 Non-POSIX entries
 =================
 
-+-------------+---------------------+-----------------------------+
-| TagName     | Description         | Attributes                  |
-+=============+=====================+=============================+
-| Action      | Command             | name, command, when, timing |
-+-------------+---------------------+-----------------------------+
-| Package     | Software Packages   | name, type, version, url    |
-+-------------+---------------------+-----------------------------+
-| PostInstall | PostInstall command | name                        |
-+-------------+---------------------+-----------------------------+
-| Service     | System Services     | name, type, status, target  |
-+-------------+---------------------+-----------------------------+
++-------------+---------------------+--------------------------------------------+
+| TagName     | Description         | Attributes                                 |
++=============+=====================+============================================+
+| Action      | Command             | name, command, when, timing, status, build |
++-------------+---------------------+--------------------------------------------+
+| Package     | Software Packages   | name, type, version, url                   |
++-------------+---------------------+--------------------------------------------+
+| PostInstall | PostInstall command | name                                       |
++-------------+---------------------+--------------------------------------------+
+| Service     | System Services     | name, type, status, target                 |
++-------------+---------------------+--------------------------------------------+
+
+.. note::
+
+    PostInstall entries are deprecated in favor of Action entries. In
+    fact, a PostInstall entry is simply a specific type of Action.
+    Basically, the following are equivalent:
+
+    .. code-block:: xml
+
+        <PostInstall name='foo'/>
+
+    and
+
+    .. code-block:: xml
+
+        <Action timing='post' when='modified' name='n' command='foo' status='ignore'/>
 
 POSIX entries
 =============
@@ -48,7 +64,7 @@ will only contain a *name* attribute. The type will be added by the
 plugin that handles the entry in the case of `Cfg`_, `TGenshi`_, or
 `TCheetah`_. If the entry is handled by the `Rules`_ plugin (i.e. it is
 a device, directory, hardlink, symlink, etc), then you will specify both
-the *type* and any other necessary attributes in `Rules`_. 
+the *type* and any other necessary attributes in `Rules`_.
 
 Running ``bcfg2-lint`` will check your configuration specification for
 the presence of any mandatory attributes that are necessary for the
@@ -71,6 +87,8 @@ Path type specified.
 +-------------+----------------------+-----------------+--------------------------+
 | file        | Replaces ConfigFile  | Configuration   | name, owner, group,      |
 |             | entries              | File            | perms, encoding, empty   |
+|             |                      |                 |                          |
+|             |                      |                 | **Note:** see below      |
 +-------------+----------------------+-----------------+--------------------------+
 | hardlink    | New                  | Create          | name, to                 |
 |             |                      | hardlinks       |                          |
@@ -85,14 +103,14 @@ Path type specified.
 |             |                      | failures        |                          |
 |             |                      | (currently      |                          |
 |             |                      | applies to only |                          |
-|             |                      | YUMng)          |                          |
+|             |                      | APT and YUMng)  |                          |
 +-------------+----------------------+-----------------+--------------------------+
 | nonexistent | New                  | Specify a path  | name, recursive          |
 |             |                      | that should not |                          |
 |             |                      | exist           |                          |
 +-------------+----------------------+-----------------+--------------------------+
-| permissions | Replaces Permissions | Permissions of  | name, owner,             |
-|             | entries              | POSIX entities  | group, perms             |
+| permissions | Replaces Permissions | Permissions of  | name, owner, group,      |
+|             | entries              | POSIX entities  | perms, recursive         |
 |             |                      |                 |                          |
 +-------------+----------------------+-----------------+--------------------------+
 | vcs         | New                  | Create version  | vcstype (git),           |
@@ -100,8 +118,21 @@ Path type specified.
 |             |                      | checkout        |                          |
 +-------------+----------------------+-----------------+--------------------------+
 
-Keep in mind that permissions for files served up by Cfg/TGenshi/TCheetah
+Keep in mind that permissions for files handled by Cfg/TGenshi/TCheetah
 are still handled via the traditional :ref:`server-info` mechanisms.
+
+Additional information
+----------------------
+
+This section describes some additional behavior relating to POSIX entry
+attributes.
+
+Recursive permissions
+^^^^^^^^^^^^^^^^^^^^^
+
+As per the request in ticket 871, Path type='permissions' entries allow you to
+set a recursive attribute which allows the owner/group to be set recursively
+for a directory.
 
 .. _boundentries:
 
