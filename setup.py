@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
-from distutils.core import setup
-from distutils.core import Command
+from setuptools import setup
+from setuptools import Command
 from fnmatch import fnmatch
 from glob import glob
 import os
@@ -121,7 +121,7 @@ if sys.hexversion < 0x03000000 and os.path.exists(py3lib):
 
 setup(cmdclass=cmdclass,
       name="Bcfg2",
-      version="1.2.0rc2",
+      version="1.2.0",
       description="Bcfg2 Server",
       author="Narayan Desai",
       author_email="desai@mcs.anl.gov",
@@ -140,6 +140,7 @@ setup(cmdclass=cmdclass,
                 "Bcfg2.Server.Reports.reports.templatetags",
                 "Bcfg2.Server.Snapshots",
                 ],
+      install_requires = ["lxml"],
       package_dir = {'Bcfg2': 'src/lib'},
       package_data = {'Bcfg2.Server.Reports.reports':['fixtures/*.xml',
                 'templates/*.html', 'templates/*/*.html',
