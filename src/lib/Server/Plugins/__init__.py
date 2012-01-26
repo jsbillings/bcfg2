@@ -12,6 +12,7 @@ __all__ = [
            'Decisions',
            'Fossil',
            'Git',
+           'Git2',
            'GroupPatterns',
            'Hg',
            'Hostbase',
