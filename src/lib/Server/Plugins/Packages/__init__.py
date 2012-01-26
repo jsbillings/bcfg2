@@ -4,7 +4,6 @@ import time
 import copy
 import glob
 import shutil
-import logging
 import lxml.etree
 import Bcfg2.Logger
 import Bcfg2.Server.Plugin
@@ -12,8 +11,6 @@ from Bcfg2.Bcfg2Py3k import ConfigParser, urlopen
 from Bcfg2.Server.Plugins.Packages import Collection
 from Bcfg2.Server.Plugins.Packages.PackagesSources import PackagesSources
 from Bcfg2.Server.Plugins.Packages.PackagesConfig import PackagesConfig
-
-logger = logging.getLogger('Packages')
 
 class Packages(Bcfg2.Server.Plugin.Plugin,
                Bcfg2.Server.Plugin.StructureValidator,
@@ -39,25 +36,40 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
             os.makedirs(self.keypath)
 
         # set up config files
-        self.config = PackagesConfig(os.path.join(self.data, "packages.conf"),
-                                     core.fam, self)
+        self.config = PackagesConfig(self)
         self.sources = PackagesSources(os.path.join(self.data, "sources.xml"),
                                        self.cachepath, core.fam, self,
                                        self.config)
 
+    def toggle_debug(self):
+        Bcfg2.Server.Plugin.Plugin.toggle_debug(self)
+        self.sources.toggle_debug()
+
     @property
     def disableResolver(self):
         try:
-            return self.config.get("global", "resolver").lower() == "disabled"
+            return not self.config.getboolean("global", "resolver")
         except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
             return False
+        except ValueError:
+            # for historical reasons we also accept "enabled" and
+            # "disabled", which are not handled according to the
+            # Python docs but appear to be handled properly by
+            # ConfigParser in at least some versions
+            return self.config.get("global", "resolver",
+                                   default="enabled").lower() == "disabled"
 
     @property
     def disableMetaData(self):
         try:
-            return self.config.get("global", "metadata").lower() == "disabled"
+            return not self.config.getboolean("global", "resolver")
         except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
             return False
+        except ValueError:
+            # for historical reasons we also accept "enabled" and
+            # "disabled"
+            return self.config.get("global", "metadata",
+                                   default="enabled").lower() == "disabled"
 
     def create_config(self, entry, metadata):
         """ create yum/apt config for the specified host """
@@ -67,38 +79,38 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
                   'type': 'file',
                   'perms': '0644'}
 
-        collection = Collection.factory(metadata, self.sources, self.data)
+        collection = self._get_collection(metadata)
         entry.text = collection.get_config()
         for (key, value) in list(attrib.items()):
             entry.attrib.__setitem__(key, value)
 
     def HandleEntry(self, entry, metadata):
         if entry.tag == 'Package':
-            collection = Collection.factory(metadata, self.sources, self.data)
+            collection = self._get_collection(metadata)
             entry.set('version', 'auto')
             entry.set('type', collection.ptype)
         elif entry.tag == 'Path':
-            if (self.config.has_section("global") and
-                ((self.config.has_option("global", "yum_config") and
-                  entry.get("name") == self.config.get("global",
-                                                       "yum_config")) or
-                 (self.config.has_option("global", "apt_config") and 
-                  entry.get("name") == self.config.get("global",
-                                                       "apt_config")))):
+            if (entry.get("name") == self.config.get("global", "yum_config",
+                                                     default="") or
+                entry.get("name") == self.config.get("global", "apt_config",
+                                                     default="")):
                 self.create_config(entry, metadata)
 
     def HandlesEntry(self, entry, metadata):
         if entry.tag == 'Package':
-            collection = Collection.factory(metadata, self.sources, self.data)
-            if collection.magic_groups_match():
+            if self.config.getboolean("global", "magic_groups",
+                                      default=True) == True:
+                collection = self._get_collection(metadata)
+                if collection.magic_groups_match():
+                    return True
+            else:
                 return True
         elif entry.tag == 'Path':
             # managed entries for yum/apt configs
-            if ((self.config.has_option("global", "yum_config") and
-                 entry.get("name") == self.config.get("global",
-                                                      "yum_config")) or
-                (self.config.has_option("global", "apt_config") and 
-                 entry.get("name") == self.config.get("global", "apt_config"))):
+            if (entry.get("name") == self.config.get("global", "yum_config",
+                                                     default="") or
+                entry.get("name") == self.config.get("global", "apt_config",
+                                                     default="")):
                 return True
         return False
 
@@ -109,7 +121,7 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
         metadata - client metadata instance
         structures - a list of structure-stage entry combinations
         '''
-        collection = Collection.factory(metadata, self.sources, self.data)
+        collection = self._get_collection(metadata)
         indep = lxml.etree.Element('Independent')
         self._build_packages(metadata, indep, structures,
                              collection=collection)
@@ -125,7 +137,7 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
             return
 
         if collection is None:
-            collection = Collection.factory(metadata, self.sources, self.data)
+            collection = self._get_collection(metadata)
         # initial is the set of packages that are explicitly specified
         # in the configuration
         initial = set()
@@ -161,8 +173,8 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
             self.logger.info("Packages: Got %d unknown entries" % len(unknown))
             self.logger.info("Packages: %s" % list(unknown))
         newpkgs = list(packages.difference(initial))
-        self.logger.debug("Packages: %d initial, %d complete, %d new" %
-                          (len(initial), len(packages), len(newpkgs)))
+        self.debug_log("Packages: %d initial, %d complete, %d new" %
+                       (len(initial), len(packages), len(newpkgs)))
         newpkgs.sort()
         for pkg in newpkgs:
             lxml.etree.SubElement(independent, 'BoundPackage', name=pkg,
@@ -218,8 +230,8 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
                         os.unlink(cfile)
                 except OSError:
                     err = sys.exc_info()[1]
-                    logger.error("Packages: Could not remove cache file %s: %s"
-                                 % (cfile, err))
+                    self.logger.error("Packages: Could not remove cache file "
+                                      "%s: %s" % (cfile, err))
 
     def _load_gpg_keys(self, force_update):
         """ Load gpg keys from the config """
@@ -227,7 +239,8 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
         keys = []
         for source in self.sources:
             for key in source.gpgkeys:
-                localfile = os.path.join(self.keypath, os.path.basename(key))
+                localfile = os.path.join(self.keypath,
+                                         os.path.basename(key.rstrip("/")))
                 if localfile not in keyfiles:
                     keyfiles.append(localfile)
                 if ((force_update and key not in keys) or
@@ -241,6 +254,10 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
             if kfile not in keyfiles:
                 os.unlink(kfile)
 
+    def _get_collection(self, metadata):
+        return Collection.factory(metadata, self.sources, self.data,
+                                  debug=self.debug_flag)
+
     def get_additional_data(self, metadata):
-        collection = Collection.factory(metadata, self.sources, self.data)
+        collection = self._get_collection(metadata)
         return dict(sources=collection.get_additional_data())

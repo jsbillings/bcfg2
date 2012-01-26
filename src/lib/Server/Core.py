@@ -37,6 +37,14 @@ except:
     pass
 
 
+def sort_xml(node, key=None):
+    for child in node:
+        sort_xml(child, key)
+
+    sorted_children = sorted(node, key=key)
+    node[:] = sorted_children
+
+
 class CoreInitError(Exception):
     """This error is raised when the core cannot be initialized."""
     pass
@@ -230,12 +238,14 @@ class Core(Component):
                 continue
             try:
                 self.Bind(entry, metadata)
-            except PluginExecutionError:
+            except PluginExecutionError, exc:
                 if 'failure' not in entry.attrib:
-                    entry.set('failure', 'bind error')
+                    entry.set('failure', 'bind error: %s' % exc)
                 logger.error("Failed to bind entry: %s %s" % \
                              (entry.tag, entry.get('name')))
-            except:
+            except Exception, exc:
+                if 'failure' not in entry.attrib:
+                    entry.set('failure', 'bind error: %s' % exc)
                 logger.error("Unexpected failure in BindStructure: %s %s" \
                              % (entry.tag, entry.get('name')), exc_info=1)
 
@@ -313,6 +323,9 @@ class Core(Component):
             except:
                 logger.error("error in BindStructure", exc_info=1)
         self.validate_goals(meta, config)
+        
+        sort_xml(config, key=lambda e: e.get('name'))
+
         logger.info("Generated config for %s in %.03f seconds" % \
                     (client, time.time() - start))
         return config

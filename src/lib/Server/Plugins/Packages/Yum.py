@@ -16,7 +16,7 @@ from Bcfg2.Server.Plugins.Packages.Collection import Collection
 from Bcfg2.Server.Plugins.Packages.Source import SourceInitError, Source, \
      fetch_url
 
-logger = logging.getLogger("Packages")
+logger = logging.getLogger(__name__)
 
 try:
     from pulp.client.consumer.config import ConsumerConfig
@@ -86,17 +86,15 @@ class YumCollection(Collection):
     # not be included in the temporary yum.conf we write out
     option_blacklist = ["use_yum_libraries", "helper"]
     
-    def __init__(self, metadata, sources, basepath):
-        Collection.__init__(self, metadata, sources, basepath)
+    def __init__(self, metadata, sources, basepath, debug=False):
+        Collection.__init__(self, metadata, sources, basepath, debug=debug)
         self.keypath = os.path.join(self.basepath, "keys")
 
         if len(sources):
             config = sources[0].config
-            self.use_yum = has_yum
-            try:
-                self.use_yum &= config.getboolean("yum", "use_yum_libraries")
-            except (ConfigParser.NoOptionError, ConfigParser.NoSectionError):
-                self.use_yum = False
+            self.use_yum = has_yum and config.getboolean("yum",
+                                                         "use_yum_libraries",
+                                                         default=False)
         else:
             self.use_yum = False
 
@@ -113,11 +111,8 @@ class YumCollection(Collection):
                                         "%s-yum.conf" % self.cachekey)
             self.write_config()
 
-            try:
-                self.helper = self.config.get("yum", "helper")
-            except ConfigParser.NoOptionError:
-                self.helper = "/usr/sbin/bcfg2-yum-helper"
-            
+            self.helper = self.config.get("yum", "helper",
+                                          default="/usr/sbin/bcfg2-yum-helper")
         if has_pulp:
             _setup_pulp(self.config)
 
@@ -149,8 +144,22 @@ class YumCollection(Collection):
             source.get_urls()
             for url_map in source.url_map:
                 if url_map['arch'] in self.metadata.groups:
-                    reponame = source.get_repo_name(url_map)
-                    config.add_section(reponame)
+                    basereponame = source.get_repo_name(url_map)
+                    reponame = basereponame
+
+                    added = False
+                    while not added:
+                        try:
+                            config.add_section(reponame)
+                            added = True
+                        except ConfigParser.DuplicateSectionError:
+                            match = re.match("-(\d)", reponame)
+                            if match:
+                                rid = int(match.group(1)) + 1
+                            else:
+                                rid = 1
+                            reponame = "%s-%d" % (basereponame, rid)
+                        
                     config.set(reponame, "name", reponame)
                     config.set(reponame, "baseurl", url_map['url'])
                     config.set(reponame, "enabled", "1")
@@ -192,11 +201,8 @@ class YumCollection(Collection):
 
             for key in needkeys:
                 # figure out the path of the key on the client
-                try:
-                    keydir = self.config.get("global", "gpg_keypath")
-                except (ConfigParser.NoOptionError,
-                        ConfigParser.NoSectionError):
-                    keydir = "/etc/pki/rpm-gpg"
+                keydir = self.config.get("global", "gpg_keypath",
+                                         default="/etc/pki/rpm-gpg")
                 remotekey = os.path.join(keydir, os.path.basename(key))
                 localkey = os.path.join(self.keypath, os.path.basename(key))
                 kdata = open(localkey).read()
@@ -256,10 +262,12 @@ class YumCollection(Collection):
             pass
         except socket.error:
             err = sys.exc_info()[1]
-            logger.error("Packages: Could not contact Pulp server: %s" % err)
+            self.logger.error("Packages: Could not contact Pulp server: %s" %
+                              err)
         except:
             err = sys.exc_info()[1]
-            logger.error("Packages: Unknown error querying Pulp server: %s" % err)
+            self.logger.error("Packages: Unknown error querying Pulp server: %s"
+                              % err)
         return consumer
 
     def _add_gpg_instances(self, keyentry, keydata, localkey, remotekey):
@@ -364,8 +372,11 @@ class YumCollection(Collection):
         # get the 'setup' variable, so we don't know how verbose
         # bcfg2-server is.  It'd also be nice if we could tell yum to
         # log to syslog.  So would a unicorn.
-        cmd = [self.helper, "-c", self.cfgfile, command]
-        self.logger.debug("Packages: running %s" % " ".join(cmd))
+        cmd = [self.helper, "-c", self.cfgfile]
+        if self.debug_flag:
+            cmd.append("-v")
+        cmd.append(command)
+        self.debug_log("Packages: running %s" % " ".join(cmd))
         try:
             helper = Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE)
         except OSError:
@@ -458,11 +469,8 @@ class YumSource(Source):
         self.needed_paths = set()
         self.file_to_arch = dict()
 
-        self.use_yum = has_yum
-        try:
-            self.use_yum &= config.getboolean("yum", "use_yum_libraries")
-        except (ConfigParser.NoOptionError, ConfigParser.NoSectionError):
-            self.use_yum = False
+        self.use_yum = has_yum and config.getboolean("yum", "use_yum_libraries",
+                                                     default=False)
 
     def save_state(self):
         if not self.use_yum:
@@ -510,17 +518,17 @@ class YumSource(Source):
             repomd = fetch_url(rmdurl)
             xdata = lxml.etree.XML(repomd)
         except ValueError:
-            logger.error("Packages: Bad url string %s" % rmdurl)
+            self.logger.error("Packages: Bad url string %s" % rmdurl)
             return []
         except HTTPError:
             err = sys.exc_info()[1]
-            logger.error("Packages: Failed to fetch url %s. code=%s" %
-                         (rmdurl, err.code))
+            self.logger.error("Packages: Failed to fetch url %s. code=%s" %
+                              (rmdurl, err.code))
             return []
         except lxml.etree.XMLSyntaxError:
             err = sys.exc_info()[1]
-            logger.error("Packages: Failed to process metadata at %s: %s" %
-                         (rmdurl, err))
+            self.logger.error("Packages: Failed to process metadata at %s: %s" %
+                              (rmdurl, err))
             return []
 
         urls = []
@@ -594,12 +602,13 @@ class YumSource(Source):
             self.packages[arch].add(pkgname)
 
             pdata = pkg.find(XP + 'format')
-            pre = pdata.find(RP + 'requires')
             self.deps[arch][pkgname] = set()
-            for entry in pre.getchildren():
-                self.deps[arch][pkgname].add(entry.get('name'))
-                if entry.get('name').startswith('/'):
-                    self.needed_paths.add(entry.get('name'))
+            pre = pdata.find(RP + 'requires')
+            if pre is not None:
+                for entry in pre.getchildren():
+                    self.deps[arch][pkgname].add(entry.get('name'))
+                    if entry.get('name').startswith('/'):
+                        self.needed_paths.add(entry.get('name'))
             pro = pdata.find(RP + 'provides')
             if pro != None:
                 for entry in pro.getchildren():

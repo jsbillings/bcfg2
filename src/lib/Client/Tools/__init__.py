@@ -288,6 +288,10 @@ class SvcTool(Tool):
     """This class defines basic Service behavior"""
     name = 'SvcTool'
 
+    def __init__(self, logger, setup, config):
+        Tool.__init__(self, logger, setup, config)
+        self.restarted = []
+
     def get_svc_command(self, service, action):
         """Return the basename of the command used to start/stop services."""
         return '/etc/init.d/%s %s' % (service.get('name'), action)
@@ -309,6 +313,13 @@ class SvcTool(Tool):
         # not supported for this driver
         return 0
 
+    def Remove(self, services):
+        """ Dummy implementation of service removal method """
+        if self.setup['servicemode'] != 'disabled':
+            for entry in services:
+                entry.set("status", "off")
+                self.InstallService(entry)
+
     def BundleUpdated(self, bundle, states):
         """The Bundle has been updated."""
         if self.setup['servicemode'] == 'disabled':
@@ -316,17 +327,20 @@ class SvcTool(Tool):
 
         for entry in [ent for ent in bundle if self.handlesEntry(ent)]:
             mode = entry.get('mode', 'default')
-            if mode == 'manual' or \
-                    (mode == 'interactive_only' and not self.setup['interactive']):
+            if (mode == 'manual' or
+                (mode == 'interactive_only' and
+                 not self.setup['interactive'])):
                 continue
             # need to handle servicemode = (build|default)
             # need to handle mode = (default|supervised)
+            rc = None
             if entry.get('status') == 'on':
                 if self.setup['servicemode'] == 'build':
                     rc = self.stop_service(entry)
-                else:
+                elif entry.get('name') not in self.restarted:
                     if self.setup['interactive']:
-                        prompt = 'Restart service %s?: (y/N): ' % entry.get('name')
+                        prompt = ('Restart service %s?: (y/N): ' %
+                                  entry.get('name'))
                         # py3k compatibility
                         try:
                             ans = raw_input(prompt)
@@ -335,8 +349,10 @@ class SvcTool(Tool):
                         if ans not in ['y', 'Y']:
                             continue
                     rc = self.restart_service(entry)
+                    if not rc:
+                        self.restarted.append(entry.get('name'))
             else:
                 rc = self.stop_service(entry)
             if rc:
-                self.logger.error("Failed to manipulate service %s" % \
+                self.logger.error("Failed to manipulate service %s" %
                                   (entry.get('name')))

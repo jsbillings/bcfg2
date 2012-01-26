@@ -6,12 +6,11 @@ import logging
 import Bcfg2.Server.Core
 import Bcfg2.Logger
 import Bcfg2.Options
+import Bcfg2.Server.Admin
 # Compatibility import
 from Bcfg2.Bcfg2Py3k import StringIO
 
 log = logging.getLogger('bcfg2-admin')
-
-import Bcfg2.Server.Admin
 
 def mode_import(modename):
     """Load Bcfg2.Server.Admin.<mode>."""
@@ -44,6 +43,9 @@ def main():
         'verbose': Bcfg2.Options.VERBOSE,
         }
     setup = Bcfg2.Options.OptionParser(optinfo)
+    # override default help message to include description of all modes
+    setup.hm = "Usage:\n     %s\n%s" % (setup.buildHelpMessage(),
+                                        create_description())
     setup.parse(sys.argv[1:])
 
     log_args = dict(to_syslog=False, to_console=logging.WARNING)
@@ -58,13 +60,12 @@ def main():
             setup['args'] = [setup['args'][1], setup['args'][0]]
         else:
             # Print short help for all modes
-            print("Usage:\n     %s" % setup.buildHelpMessage())
-            print(create_description())
+            print(setup.hm)
             raise SystemExit(0)
 
     if setup['args'][0] in get_modes():
         modname = setup['args'][0].capitalize()
-	if len(setup['args']) > 1 and setup['args'][1] == 'help':
+        if len(setup['args']) > 1 and setup['args'][1] == 'help':
             print(mode_import(modname).__longhelp__)
             raise SystemExit(0)
         try:

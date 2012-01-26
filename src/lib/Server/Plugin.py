@@ -11,6 +11,7 @@ import posixpath
 import re
 import sys
 import threading
+from Bcfg2.Bcfg2Py3k import ConfigParser
 
 from lxml.etree import XML, XMLSyntaxError
 
@@ -62,7 +63,25 @@ class PluginExecutionError(Exception):
     pass
 
 
-class Plugin(object):
+class Debuggable(object):
+    __rmi__ = ['toggle_debug']
+
+    def __init__(self, name=None):
+        if name is None:
+            name = "%s.%s" % (self.__class__.__module__,
+                              self.__class__.__name__)
+        self.debug_flag = False
+        self.logger = logging.getLogger(name)
+        
+    def toggle_debug(self):
+        self.debug_flag = not self.debug_flag
+
+    def debug_log(self, message, flag=None):
+        if (flag is None and self.debug_flag) or flag:
+            self.logger.error(message)
+
+
+class Plugin(Debuggable):
     """This is the base class for all Bcfg2 Server plugins.
     Several attributes must be defined in the subclass:
     name : the name of the plugin
@@ -77,7 +96,6 @@ class Plugin(object):
     name = 'Plugin'
     __version__ = '$Id$'
     __author__ = 'bcfg-dev@mcs.anl.gov'
-    __rmi__ = ['toggle_debug']
     experimental = False
     deprecated = False
     conflicts = []
@@ -97,16 +115,8 @@ class Plugin(object):
         self.Entries = {}
         self.core = core
         self.data = "%s/%s" % (datastore, self.name)
-        self.logger = logging.getLogger('Bcfg2.Plugins.%s' % (self.name))
         self.running = True
-        self.debug_flag = False
-
-    def toggle_debug(self):
-        self.debug_flag = not self.debug_flag
-
-    def debug_log(self, message, flag=None):
-        if (flag is None) and self.debug_flag or flag:
-            self.logger.error(message)
+        Debuggable.__init__(self, name=self.name)
 
     @classmethod
     def init_repo(cls, repo):
@@ -282,7 +292,7 @@ class ThreadedStatistics(Statistics,
     def process_statistics(self, metadata, data):
         warned = False
         try:
-            self.work_queue.put_nowait((metadata, copy.deepcopy(data)))
+            self.work_queue.put_nowait((metadata, copy.copy(data)))
             warned = False
         except Full:
             if not warned:
@@ -356,7 +366,7 @@ class FileBacked(object):
         object.__init__(self)
         self.data = ''
         self.name = name
-
+        
     def HandleEvent(self, event=None):
         """Read file upon update."""
         if event and event.code2str() not in ['exists', 'changed', 'created']:
@@ -371,6 +381,12 @@ class FileBacked(object):
     def Index(self):
         """Update local data structures based on current file state"""
         pass
+
+    def __repr__(self):
+        return "%s: %s" % (self.__class__.__name__, str(self))
+
+    def __str__(self):
+        return "%s: %s" % (self.name, self.data)
 
 
 class DirectoryBacked(object):
@@ -567,6 +583,9 @@ class XMLFileBacked(FileBacked):
     def __iter__(self):
         return iter(self.entries)
 
+    def __str__(self):
+        return "%s: %s" % (self.name, lxml.etree.tostring(self.xdata))
+
 
 class SingleXMLFileBacked(XMLFileBacked):
     """This object is a coherent cache for an independent XML file."""
@@ -636,7 +655,7 @@ class StructFile(XMLFileBacked):
                     rv.extend(self._match(child, metadata))
             return rv
         else:
-            rv = copy.deepcopy(item)
+            rv = copy.copy(item)
             for child in rv.iterchildren():
                 rv.remove(child)
             for child in item.iterchildren():
@@ -770,6 +789,9 @@ class XMLSrc(XMLFileBacked):
             self.pnode.Match(metadata, cache[1])
             self.cache = cache
 
+    def __str__(self):
+        return str(self.items)
+
 
 class InfoXML (XMLSrc):
     __node__ = InfoNode
@@ -816,11 +838,9 @@ class PrioDir(Plugin, Generator, XMLDirectoryBacked):
         
     def get_attrs(self, entry, metadata):
         """ get a list of attributes to add to the entry during the bind """
-        for src in list(self.entries.values()):
-            cached = src.Cache(metadata)
-            if cached == False:
-                self.logger.error("Called before data loaded")
-                raise PluginExecutionError
+        for src in self.entries.values():
+            src.Cache(metadata)
+
         matching = [src for src in list(self.entries.values())
                     if (src.cache and
                         entry.tag in src.cache[1] and
@@ -849,7 +869,7 @@ class PrioDir(Plugin, Generator, XMLDirectoryBacked):
         if '__text__' in data:
             entry.text = data['__text__']
         if '__children__' in data:
-            [entry.append(copy.deepcopy(item)) for item in data['__children__']]
+            [entry.append(copy.copy(item)) for item in data['__children__']]
 
         return dict([(key, data[key])
                      for key in list(data.keys())
@@ -857,7 +877,6 @@ class PrioDir(Plugin, Generator, XMLDirectoryBacked):
 
 
 # new unified EntrySet backend
-
 class SpecificityError(Exception):
     """Thrown in case of filename parse failure."""
     pass
@@ -1086,33 +1105,52 @@ class GroupSpool(Plugin, Generator):
         self.AddDirectoryMonitor('')
         self.encoding = core.encoding
 
+    def add_entry(self, event):
+        epath = self.event_path(event)
+        ident = self.event_id(event)
+        if posixpath.isdir(epath):
+            self.AddDirectoryMonitor(epath[len(self.data):])
+        if ident not in self.entries and posixpath.isfile(epath):
+            dirpath = "".join([self.data, ident])
+            self.entries[ident] = self.es_cls(self.filename_pattern,
+                                              dirpath,
+                                              self.es_child_cls,
+                                              self.encoding)
+            self.Entries['Path'][ident] = self.entries[ident].bind_entry
+        if not posixpath.isdir(epath):
+            # do not pass through directory events
+            self.entries[ident].handle_event(event)
+
+    def event_path(self, event):
+        return "".join([self.data, self.handles[event.requestID],
+                        event.filename])
+
+    def event_id(self, event):
+        epath = self.event_path(event)
+        if posixpath.isdir(epath):
+            return self.handles[event.requestID] + event.filename
+        else:
+            return self.handles[event.requestID][:-1]
+
     def HandleEvent(self, event):
-        """Unified FAM event handler for DirShadow."""
+        """Unified FAM event handler for GroupSpool."""
         action = event.code2str()
         if event.filename[0] == '/':
             return
-        epath = "".join([self.data, self.handles[event.requestID],
-                         event.filename])
-        if posixpath.isdir(epath):
-            ident = self.handles[event.requestID] + event.filename
-        else:
-            ident = self.handles[event.requestID][:-1]
+        ident = self.event_id(event)
 
         if action in ['exists', 'created']:
-            if posixpath.isdir(epath):
-                self.AddDirectoryMonitor(epath[len(self.data):])
-            if ident not in self.entries and posixpath.isfile(epath):
-                dirpath = "".join([self.data, ident])
-                self.entries[ident] = self.es_cls(self.filename_pattern,
-                                                  dirpath,
-                                                  self.es_child_cls,
-                                                  self.encoding)
-                self.Entries['Path'][ident] = self.entries[ident].bind_entry
-            if not posixpath.isdir(epath):
-                # do not pass through directory events
+            self.add_entry(event)
+        if action == 'changed':
+            if ident in self.entries:
                 self.entries[ident].handle_event(event)
-        if action == 'changed' and ident in self.entries:
-            self.entries[ident].handle_event(event)
+            else:
+                # got a changed event for a file we didn't know
+                # about. go ahead and process this as a 'created', but
+                # warn
+                self.logger.warning("Got changed event for unknown file %s" %
+                                    ident)
+                self.add_entry(event)
         elif action == 'deleted':
             fbase = self.handles[event.requestID] + event.filename
             if fbase in self.entries:
@@ -1133,3 +1171,51 @@ class GroupSpool(Plugin, Generator):
                 return
             reqid = self.core.fam.AddMonitor(name, self)
             self.handles[reqid] = relative
+
+class SimpleConfig(FileBacked,
+                   ConfigParser.SafeConfigParser):
+    ''' a simple plugin config using ConfigParser '''
+    _required = True
+    
+    def __init__(self, plugin):
+        filename = os.path.join(plugin.data, plugin.name.lower() + ".conf")
+        self.plugin = plugin
+        self.fam = self.plugin.core.fam
+        Bcfg2.Server.Plugin.FileBacked.__init__(self, filename)
+        ConfigParser.SafeConfigParser.__init__(self)
+
+        if (self._required or
+            (not self._required and os.path.exists(self.name))):
+            self.fam.AddMonitor(self.name, self)
+
+    def Index(self):
+        """ Build local data structures """
+        for section in self.sections():
+            self.remove_section(section)
+        self.read(self.name)
+
+    def get(self, section, option, default=None):
+        """ convenience method for getting config items """
+        try:
+            return ConfigParser.SafeConfigParser.get(self, section, option)
+        except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
+            if default is not None:
+                return default
+            else:
+                raise
+
+    def getboolean(self, section, option, default=None):
+        """ convenience method for getting boolean config items """
+        try:
+            return ConfigParser.SafeConfigParser.getboolean(self,
+                                                            section, option)
+        except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
+            if default is not None:
+                return default
+            else:
+                raise
+        except ValueError:
+            if default is not None:
+                return default
+            else:
+                raise

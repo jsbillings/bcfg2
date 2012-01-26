@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import copy
 import logging
@@ -49,6 +50,7 @@ class PropertyFile(Bcfg2.Server.Plugin.StructFile):
 
 class PropDirectoryBacked(Bcfg2.Server.Plugin.DirectoryBacked):
     __child__ = PropertyFile
+    patterns = re.compile(r'.*\.xml$')
 
 
 class Properties(Bcfg2.Server.Plugin.Plugin,
@@ -72,4 +74,4 @@ class Properties(Bcfg2.Server.Plugin.Plugin,
             raise Bcfg2.Server.Plugin.PluginInitError
 
     def get_additional_data(self, _):
-        return copy.deepcopy(self.store.entries)
+        return copy.copy(self.store.entries)
