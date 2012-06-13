@@ -21,11 +21,14 @@ from Bcfg2.Bcfg2Py3k import xmlrpclib
 import Bcfg2.Proxy
 import Bcfg2.Logger
 
+# Error reporting
+from Bcfg2.Errors import *
+
 logger = logging.getLogger('bcfg2')
 
 def cb_sigint_handler(signum, frame):
     """Exit upon CTRL-C."""
-    os._exit(1)
+    os._exit(SIGNAL_INTERRUPT)
 
 
 class Client:
@@ -74,7 +77,7 @@ class Client:
         if self.setup['args']:
             print("Bcfg2 takes no arguments, only options")
             print(self.setup.buildHelpMessage())
-            raise SystemExit(1)
+            raise SystemExit(SYNTAX_ERROR)
         level = 30
         if self.setup['verbose']:
             level = 20
@@ -89,14 +92,14 @@ class Client:
         if self.setup['bundle_quick']:
             if self.setup['bundle'] == []:
                 self.logger.error("-Q option requires -b")
-                raise SystemExit(1)
+                raise SystemExit(SYNTAX_ERROR)
             elif self.setup['remove']:
                 self.logger.error("-Q option incompatible with -r")
-                raise SystemExit(1)
+                raise SystemExit(SYNTAX_ERROR)
         if 'drivers' in self.setup and self.setup['drivers'] == 'help':
             self.logger.info("The following drivers are available:")
             self.logger.info(Bcfg2.Client.Tools.drivers)
-            raise SystemExit(0)
+            raise SystemExit(NO_ERROR)
         if self.setup['remove'] and 'services' in self.setup['remove'].lower():
             self.logger.error("Service removal is nonsensical; "
                               "removed services will only be disabled")
@@ -107,7 +110,7 @@ class Client:
                               self.setup['remove'])
         if self.setup["file"] and self.setup["cache"]:
             print("cannot use -f and -c together")
-            raise SystemExit(1)
+            raise SystemExit(SYNTAX_ERROR)
         if not self.setup['server'].startswith('https://'):
             self.setup['server'] = 'https://' + self.setup['server']
 
@@ -136,13 +139,13 @@ class Client:
                 os.unlink(script.name)
         except:
             self.logger.error("Failed to execute probe: %s" % (name), exc_info=1)
-            raise SystemExit(1)
+            raise SystemExit(PROBE_EXECUTE_FAILURE)
         return ret
 
     def fatal_error(self, message):
         """Signal a fatal error."""
         self.logger.error("Fatal error: %s" % (message))
-        os._exit(1)
+        os._exit(FATAL_ERROR)
 
     def run(self):
         """Perform client execution phase."""
@@ -181,7 +184,7 @@ class Client:
                     err = sys.exc_info()[1]
                     self.fatal_error("Failed to set client profile")
                     self.logger.error(str(err))
-                    raise SystemExit(1)
+                    raise SystemExit(NO_PROFILE)
 
             try:
                 probe_data = proxy.GetProbes()
@@ -192,7 +195,7 @@ class Client:
                 err = sys.exc_info()[1]
                 self.logger.error("Failed to download probes from bcfg2: %s" %
                                   err)
-                raise SystemExit(1)
+                raise SystemExit(PROBE_DOWNLOAD_FAILURE)
 
             times['probe_download'] = time.time()
 
@@ -212,7 +215,7 @@ class Client:
                  for probe in probes.findall(".//probe")]
             except:
                 self.logger.error("Failed to execute probes")
-                raise SystemExit(1)
+                raise SystemExit(PROBE_EXECUTE_FAILURE)
 
             if len(probes.findall(".//probe")) > 0:
                 try:
@@ -223,7 +226,7 @@ class Client:
                 except Bcfg2.Proxy.ProxyError:
                     err = sys.exc_info()[1]
                     self.logger.error("Failed to upload probe data: %s" % err)
-                    raise SystemExit(1)
+                    raise SystemExit(PROBE_UPLOAD_FAILURE)
 
             times['probe_upload'] = time.time()
 
@@ -236,7 +239,7 @@ class Client:
                 except Bcfg2.Proxy.ProxyError:
                     err = sys.exc_info()[1]
                     self.logger.error("Failed to get decision list: %s" % err)
-                    raise SystemExit(1)
+                    raise SystemExit(DECISION_FAILURE)
 
             try:
                 rawconfig = proxy.GetConfig().encode('UTF-8')
@@ -244,7 +247,7 @@ class Client:
                 err = sys.exc_info()[1]
                 self.logger.error("Failed to download configuration from "
                                   "Bcfg2: %s" % err)
-                raise SystemExit(2)
+                raise SystemExit(CONFIGURATION_DOWNLOAD_FAILURE)
 
             times['config_download'] = time.time()
 
@@ -321,7 +324,7 @@ class Client:
                 err = sys.exc_info()[1]
                 self.logger.error("Failed to upload configuration statistics: "
                                   "%s" % err)
-                raise SystemExit(2)
+                raise SystemExit(STATISTICS_UPLOAD_FAILURE)
 
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, cb_sigint_handler)
