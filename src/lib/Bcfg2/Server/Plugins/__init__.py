@@ -2,6 +2,7 @@
 
 __all__ = [
            'Account',
+		   'Acl',
            'Base',
            'Bundler',
            'Bzr',
