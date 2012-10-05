@@ -3,6 +3,7 @@ __revision__ = '$Revision$'
 
 __all__ = [
            'Account',
+		   'Acl',
            'Base',
            'Bundler',
            'Bzr',

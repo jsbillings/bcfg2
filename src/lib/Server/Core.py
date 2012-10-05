@@ -477,6 +477,15 @@ class Core(Component):
             acert = None
         return self.metadata.AuthenticateConnection(acert, user, password, address)
 
+    def check_acls(self, client):
+        """ Check if client IP is in list of accepted IPs """
+        try:
+            return (client in self.plugins['Acl'].config.ips or
+					'*' in self.plugins['Acl'].config.ips)
+        except KeyError:
+            # No ACL means accept all incoming ips (wildcard)
+            return True
+
     @exposed
     def GetDecisionList(self, address, mode):
         """Get the data of the decision list."""
