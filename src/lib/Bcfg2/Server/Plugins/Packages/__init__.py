@@ -9,7 +9,7 @@ import shutil
 import lxml.etree
 import Bcfg2.Logger
 import Bcfg2.Server.Plugin
-from Bcfg2.Compat import ConfigParser, urlopen
+from Bcfg2.Compat import ConfigParser, urlopen, HTTPError
 from Bcfg2.Server.Plugins.Packages.Collection import Collection, \
     get_collection_class
 from Bcfg2.Server.Plugins.Packages.PackagesSources import PackagesSources
@@ -116,6 +116,8 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
     def toggle_debug(self):
         rv = Bcfg2.Server.Plugin.Plugin.toggle_debug(self)
         self.sources.toggle_debug()
+        for collection in self.collections.values():
+            collection.toggle_debug()
         return rv
     toggle_debug.__doc__ = Bcfg2.Server.Plugin.Plugin.toggle_debug.__doc__
 
@@ -174,7 +176,7 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
                       owner='root',
                       group='root',
                       type='file',
-                      perms='0644',
+                      mode='0644',
                       important='true')
 
         collection = self.get_collection(metadata)
@@ -248,6 +250,7 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
                 return True
         return False
 
+    @Bcfg2.Server.Plugin.track_statistics()
     def validate_structures(self, metadata, structures):
         """ Do the real work of Packages.  This does two things:
 
@@ -282,6 +285,7 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
         collection.build_extra_structures(indep)
         structures.append(indep)
 
+    @Bcfg2.Server.Plugin.track_statistics()
     def _build_packages(self, metadata, independent, structures,
                         collection=None):
         """ Perform dependency resolution and build the complete list
@@ -352,6 +356,7 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
         newpkgs.sort()
         collection.packages_to_entry(newpkgs, independent)
 
+    @Bcfg2.Server.Plugin.track_statistics()
     def Refresh(self):
         """ Packages.Refresh() => True|False
 
@@ -359,6 +364,7 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
         self._load_config(force_update=True)
         return True
 
+    @Bcfg2.Server.Plugin.track_statistics()
     def Reload(self):
         """ Packages.Refresh() => True|False
 
@@ -434,14 +440,27 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
                     not os.path.exists(localfile)):
                     self.logger.info("Packages: Downloading and parsing %s" %
                                      key)
-                    response = urlopen(key)
-                    open(localfile, 'w').write(response.read())
-                    keys.append(key)
+                    try:
+                        open(localfile, 'w').write(urlopen(key).read())
+                        keys.append(key)
+                    except HTTPError:
+                        err = sys.exc_info()[1]
+                        self.logger.error("Packages: Error downloading %s: %s"
+                                          % (key, err))
+                    except IOError:
+                        err = sys.exc_info()[1]
+                        self.logger.error("Packages: Error writing %s to %s: "
+                                          "%s" % (key, localfile, err))
+                    except:
+                        err = sys.exc_info()[1]
+                        self.logger.error("Packages: Unknown error fetching "
+                                          "%s: %s" % (key, err))
 
         for kfile in glob.glob(os.path.join(self.keypath, "*")):
             if kfile not in keyfiles:
                 os.unlink(kfile)
 
+    @Bcfg2.Server.Plugin.track_statistics()
     def get_collection(self, metadata):
         """ Get a
         :class:`Bcfg2.Server.Plugins.Packages.Collection.Collection`
@@ -458,7 +477,8 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
         if not self.sources.loaded:
             # if sources.xml has not received a FAM event yet, defer;
             # instantiate a dummy Collection object
-            return Collection(metadata, [], self.cachepath)
+            return Collection(metadata, [], self.cachepath, self.data,
+                              self.core.fam)
 
         if metadata.hostname in self.clients:
             return self.collections[self.clients[metadata.hostname]]
@@ -488,8 +508,8 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
             self.logger.error("Packages: Using %s for Collection of sources "
                               "for %s" % (cclass.__name__, metadata.hostname))
 
-        collection = cclass(metadata, relevant, self.cachepath,
-                            debug=self.debug_flag)
+        collection = cclass(metadata, relevant, self.cachepath, self.data,
+                            self.core.fam, debug=self.debug_flag)
         ckey = collection.cachekey
         self.clients[metadata.hostname] = ckey
         self.collections[ckey] = collection

@@ -4,12 +4,14 @@ import os
 import re
 import sys
 import copy
+import time
 import logging
 import operator
 import lxml.etree
 import Bcfg2.Server
 import Bcfg2.Options
-from Bcfg2.Compat import CmpMixin
+import Bcfg2.Statistics
+from Bcfg2.Compat import CmpMixin, wraps
 from Bcfg2.Server.Plugin.base import Debuggable, Plugin
 from Bcfg2.Server.Plugin.interfaces import Generator
 from Bcfg2.Server.Plugin.exceptions import SpecificityError, PluginInitError, \
@@ -25,7 +27,7 @@ except ImportError:
 DEFAULT_FILE_METADATA = Bcfg2.Options.OptionParser(dict(
         owner=Bcfg2.Options.MDATA_OWNER,
         group=Bcfg2.Options.MDATA_GROUP,
-        perms=Bcfg2.Options.MDATA_PERMS,
+        mode=Bcfg2.Options.MDATA_MODE,
         secontext=Bcfg2.Options.MDATA_SECONTEXT,
         important=Bcfg2.Options.MDATA_IMPORTANT,
         paranoid=Bcfg2.Options.MDATA_PARANOID,
@@ -38,7 +40,7 @@ LOGGER = logging.getLogger(__name__)
 #: a compiled regular expression for parsing info and :info files
 INFO_REGEX = re.compile('owner:(\s)*(?P<owner>\S+)|' +
                         'group:(\s)*(?P<group>\S+)|' +
-                        'perms:(\s)*(?P<perms>\w+)|' +
+                        'mode:(\s)*(?P<mode>\w+)|' +
                         'secontext:(\s)*(?P<secontext>\S+)|' +
                         'paranoid:(\s)*(?P<paranoid>\S+)|' +
                         'sensitive:(\s)*(?P<sensitive>\S+)|' +
@@ -77,6 +79,40 @@ def bind_info(entry, metadata, infoxml=None, default=DEFAULT_FILE_METADATA):
             entry.set(attr, val)
 
 
+class track_statistics(object):  # pylint: disable=C0103
+    """ Decorator that tracks execution time for the given
+    :class:`Plugin` method with :mod:`Bcfg2.Statistics` for reporting
+    via ``bcfg2-admin perf`` """
+
+    def __init__(self, name=None):
+        """
+        :param name: The name under which statistics for this function
+                     will be tracked.  By default, the name will be
+                     the name of the function concatenated with the
+                     name of the class the function is a member of.
+        :type name: string
+        """
+        # if this is None, it will be set later during __call_
+        self.name = name
+
+    def __call__(self, func):
+        if self.name is None:
+            self.name = func.__name__
+
+        @wraps(func)
+        def inner(obj, *args, **kwargs):
+            """ The decorated function """
+            name = "%s:%s" % (obj.__class__.__name__, self.name)
+
+            start = time.time()
+            try:
+                return func(obj, *args, **kwargs)
+            finally:
+                Bcfg2.Statistics.stats.add_value(name, time.time() - start)
+
+        return inner
+
+
 class DatabaseBacked(Plugin):
     """ Provides capabilities for a plugin to read and write to a
     database.
@@ -92,8 +128,8 @@ class DatabaseBacked(Plugin):
     option = "use_database"
 
     def _section(self):
-        """ The section to look in for
-        :attr:`DatabaseBacked.option` """
+        """ The section to look in for :attr:`DatabaseBacked.option`
+        """
         return self.name.lower()
     section = property(_section)
 
@@ -137,8 +173,14 @@ class FileBacked(object):
         :type fam: Bcfg2.Server.FileMonitor.FileMonitor
         """
         object.__init__(self)
+
+        #: A string containing the raw data in this file
         self.data = ''
+
+        #: The full path to the file
         self.name = name
+
+        #: The FAM object used to receive notifications of changes
         self.fam = fam
 
     def HandleEvent(self, event=None):
@@ -369,14 +411,15 @@ class DirectoryBacked(object):
 
 
 class XMLFileBacked(FileBacked):
-    """ This object is caches XML file data in memory.  It can be used
-    as a standalone object or as a part of
+    """ This object parses and caches XML file data in memory.  It can
+    be used as a standalone object or as a part of
     :class:`Bcfg2.Server.Plugin.helpers.XMLDirectoryBacked`
     """
 
-    #: If ``__identifier__`` is not None, then it must be the name of
-    #: an XML attribute that will be required on the top-level tag of
-    #: the file being cached
+    #: If ``__identifier__`` is set, then a top-level tag with the
+    #: specified name will be required on the file being cached.  Its
+    #: value will be available as :attr:`label`.  To disable this
+    #: behavior, set ``__identifier__`` to ``None``.
     __identifier__ = 'name'
 
     def __init__(self, filename, fam=None, should_monitor=False):
@@ -398,12 +441,26 @@ class XMLFileBacked(FileBacked):
         .. -----
         .. autoattribute:: __identifier__
         """
-        FileBacked.__init__(self, filename)
+        FileBacked.__init__(self, filename, fam=fam)
+
+        #: The raw XML data contained in the file as an
+        #: :class:`lxml.etree.ElementTree` object, with XIncludes
+        #: processed.
         self.xdata = None
+
+        #: The label of this file.  This is determined from the
+        #: top-level tag in the file, which must have an attribute
+        #: specified by :attr:`__identifier__`.
         self.label = ""
+
+        #: All entries in this file.  By default, all immediate
+        #: children of the top-level XML tag.
         self.entries = []
+
+        #: "Extra" files included in this file by XInclude.
         self.extras = []
-        self.fam = fam
+
+        #: Whether or not to monitor this file for changes.
         self.should_monitor = should_monitor
         if fam and should_monitor:
             self.fam.AddMonitor(filename, self)
@@ -1271,8 +1328,8 @@ class EntrySet(Debuggable):
                     for key, value in list(mgd.items()):
                         if value:
                             self.metadata[key] = value
-                    if len(self.metadata['perms']) == 3:
-                        self.metadata['perms'] = "0%s" % self.metadata['perms']
+                    if len(self.metadata['mode']) == 3:
+                        self.metadata['mode'] = "0%s" % self.metadata['mode']
 
     def reset_metadata(self, event):
         """ Reset metadata to defaults if info. :info, or info.xml are
@@ -1362,7 +1419,7 @@ class GroupSpool(Plugin, Generator):
         self.entries = {}
         self.handles = {}
         self.AddDirectoryMonitor('')
-        self.encoding = core.encoding
+        self.encoding = core.setup['encoding']
     __init__.__doc__ = Plugin.__init__.__doc__
 
     def add_entry(self, event):

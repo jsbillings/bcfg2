@@ -16,20 +16,13 @@ while path != "/":
     if os.path.basename(path) == "testsuite":
         break
     path = os.path.dirname(path)
-from common import XI_NAMESPACE, XI, inPy3k, call, builtins, u, can_skip, \
-    skip, skipIf, skipUnless, Bcfg2TestCase, DBModelTestCase, syncdb, \
-    patchIf, datastore, re_type
+from common import *
 from TestPlugin import TestSpecificData, TestEntrySet, TestGroupSpool, \
     TestPullTarget
 
 
 class TestCfgBaseFileMatcher(TestSpecificData):
     test_obj = CfgBaseFileMatcher
-
-    def test__init(self):
-        TestSpecificData.test__init(self)
-        bfm = self.get_obj()
-        self.assertIsInstance(bfm.regex, re_type)
 
     def test_get_regex(self):
         if self.test_obj.__basenames__:
@@ -584,7 +577,7 @@ class TestCfgEntrySet(TestEntrySet):
         generator.get_data.return_value = "data"
         eset.best_matching.return_value = generator
         eset.get_handlers = Mock()
-        entry = lxml.etree.Element("Path", name="/test.txt", perms="0640")
+        entry = lxml.etree.Element("Path", name="/test.txt", mode="0640")
         metadata = Mock()
 
         def reset():

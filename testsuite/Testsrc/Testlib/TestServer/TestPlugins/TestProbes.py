@@ -15,9 +15,7 @@ while path != "/":
     if os.path.basename(path) == "testsuite":
         break
     path = os.path.dirname(path)
-from common import XI_NAMESPACE, XI, inPy3k, call, builtins, u, can_skip, \
-    skip, skipIf, skipUnless, Bcfg2TestCase, DBModelTestCase, syncdb, \
-    patchIf, datastore
+from common import *
 from Bcfg2.Server.Plugins.Probes import *
 from TestPlugin import TestEntrySet, TestProbing, TestConnector, \
     TestDatabaseBacked
@@ -203,7 +201,7 @@ class TestProbes(TestProbing, TestConnector, TestDatabaseBacked):
 
     def get_obj(self, core=None):
         if core is None:
-            core = Mock()
+            core = MagicMock()
         return self.test_obj(core, datastore)
 
     def get_test_probedata(self):
@@ -235,7 +233,7 @@ text
                 "bar.example.com": []}
 
     def get_probes_object(self, use_db=False, load_data=None):
-        core = Mock()
+        core = MagicMock()
         core.setup.cfp.getboolean = Mock()
         core.setup.cfp.getboolean.return_value = use_db
         if load_data is None:

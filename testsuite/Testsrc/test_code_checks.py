@@ -13,7 +13,7 @@ while _path != '/':
     if os.path.basename(_path) == "testsuite":
         break
     _path = os.path.dirname(_path)
-from common import can_skip, skip, skipIf, skipUnless, Bcfg2TestCase
+from common import *
 
 # path to Bcfg2 src directory
 srcpath = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..",
@@ -34,7 +34,8 @@ except OSError:
 # perform checks on the listed files only if the module listed in the
 # keys can be imported
 contingent_checks = {
-    ("django",): {"lib/Bcfg2/Server": ["Reports",
+    ("django",): {"lib/Bcfg2": ["Reporting"],
+                  "lib/Bcfg2/Server": ["Reports",
                                        "SchemaUpdater",
                                        "models.py"],
                   "lib/Bcfg2/Server/Admin": ["Reports.py", "Syncdb.py"],
@@ -54,23 +55,11 @@ contingent_checks = {
 
 # perform only error checking on the listed files
 error_checks = {
-    "sbin": ["bcfg2-build-reports", "bcfg2-admin", "bcfg2-reports"],
-    "lib/Bcfg2": ["Proxy.py", "SSLServer.py"],
+    "sbin": ["bcfg2-build-reports", "bcfg2-reports"],
+    "lib/Bcfg2": ["Proxy.py", "SSLServer.py", "Reporting"],
     "lib/Bcfg2/Server": ["Reports", "SchemaUpdater"],
-    "lib/Bcfg2/Server/Admin": ["Backup.py",
-                               "Bundle.py",
-                               "Client.py",
-                               "Compare.py",
-                               "Minestruct.py",
-                               "Perf.py",
-                               "Pull.py",
-                               "Query.py",
-                               "Reports.py",
-                               "Snapshots.py",
-                               "Syncdb.py",
-                               "Tidy.py",
-                               "Viz.py",
-                               "Xcmd.py"],
+    "lib/Bcfg2/Server/Admin": ["Compare.py",
+                               "Snapshots.py"],
     "lib/Bcfg2/Client/Tools": ["launchd.py",
                                "OpenCSW.py",
                                "Blast.py",
@@ -80,8 +69,7 @@ error_checks = {
                                "RcUpdate.py",
                                "VCS.py",
                                "YUM24.py"],
-    "lib/Bcfg2/Server/Plugins": ["Decisions.py",
-                                 "Deps.py",
+    "lib/Bcfg2/Server/Plugins": ["Deps.py",
                                  "Ldap.py",
                                  "Pkgmgr.py"]
     }
@@ -167,7 +155,6 @@ class TestPylint(Bcfg2TestCase):
 
     full_blacklist = expand_path_dict(error_checks) + contingent_blacklist + \
         blacklist
-
 
     @skipIf(not os.path.exists(srcpath), "%s does not exist" % srcpath)
     @skipIf(not os.path.exists(rcfile), "%s does not exist" % rcfile)

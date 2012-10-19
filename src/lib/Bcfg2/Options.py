@@ -334,6 +334,26 @@ def get_bool(val):
         raise ValueError
 
 
+def get_size(value):
+    """ Given a number of bytes in a human-readable format (e.g.,
+    '512m', '2g'), get the absolute number of bytes as an integer """
+    if value == -1:
+        return value
+    mat = re.match("(\d+)([KkMmGg])?", value)
+    if not mat:
+        raise ValueError
+    rvalue = int(mat.group(1))
+    mult = mat.group(2).lower()
+    if mult == 'k':
+        return rvalue * 1024
+    elif mult == 'm':
+        return rvalue * 1024 * 1024
+    elif mult == 'g':
+        return rvalue * 1024 * 1024 * 1024
+    else:
+        return rvalue
+
+
 def get_gid(val):
     """ This takes a group name or gid and returns the corresponding
     gid. """
@@ -452,11 +472,11 @@ MDATA_IMPORTANT = \
            default='False',
            odesc='Important entries are installed first',
            cf=('mdata', 'important'))
-MDATA_PERMS = \
-    Option('Default Path permissions',
+MDATA_MODE = \
+    Option('Default mode for Path',
            default='644',
-           odesc='octal permissions',
-           cf=('mdata', 'perms'))
+           odesc='octal file mode',
+           cf=('mdata', 'mode'))
 MDATA_SECONTEXT = \
     Option('Default SELinux context',
            default='__default__',
@@ -561,7 +581,7 @@ DB_ENGINE = \
            deprecated_cf=('statistics', 'database_engine'))
 DB_NAME = \
     Option('Database name',
-           default=os.path.join(SERVER_REPOSITORY.default, "bcfg2.sqlite"),
+           default=os.path.join(SERVER_REPOSITORY.default, "etc/bcfg2.sqlite"),
            cf=('database', 'name'),
            deprecated_cf=('statistics', 'database_name'))
 DB_USER = \
@@ -605,8 +625,21 @@ DJANGO_DEBUG = \
 DJANGO_WEB_PREFIX = \
     Option('Web prefix',
            default=None,
-           cf=('statistics', 'web_prefix'),)
+           cf=('reporting', 'web_prefix'),
+           deprecated_cf=('statistics', 'web_prefix'),)
 
+# Reporting options
+REPORTING_FILE_LIMIT = \
+    Option('Reporting file size limit',
+           default=get_size('1m'),
+           cf=('reporting', 'file_limit'),
+           cook=get_size,)
+
+# Reporting options
+REPORTING_TRANSPORT = \
+    Option('Reporting transport',
+           default='DirectStore',
+           cf=('reporting', 'transport'),)
 
 # Client options
 CLIENT_KEY = \
@@ -1134,6 +1167,9 @@ DATABASE_COMMON_OPTIONS = dict(web_configfile=WEB_CFILE,
                                time_zone=DJANGO_TIME_ZONE,
                                django_debug=DJANGO_DEBUG,
                                web_prefix=DJANGO_WEB_PREFIX)
+
+REPORTING_COMMON_OPTIONS = dict(reporting_file_limit=REPORTING_FILE_LIMIT,
+                                reporting_transport=REPORTING_TRANSPORT)
 
 
 class OptionParser(OptionSet):

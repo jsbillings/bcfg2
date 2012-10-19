@@ -21,6 +21,8 @@ except ImportError:
 
 LOGGER = logging.getLogger(__name__)
 
+LOGGER = logging.getLogger(__name__)
+
 
 class EncryptedTemplateLoader(TemplateLoader):
     """ Subclass :class:`genshi.template.TemplateLoader` to decrypt
@@ -40,6 +42,9 @@ class CfgEncryptedGenshiGenerator(CfgGenshiGenerator):
 
     #: handle .crypt.genshi or .genshi.crypt files
     __extensions__ = ['genshi.crypt', 'crypt.genshi']
+
+    #: Override low priority from parent class
+    __priority__ = 0
 
     #: Use a TemplateLoader class that decrypts the data on the fly
     #: when it's read in

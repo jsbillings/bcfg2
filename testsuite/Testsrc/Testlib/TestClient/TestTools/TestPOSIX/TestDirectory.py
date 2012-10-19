@@ -17,9 +17,7 @@ while path != "/":
     path = os.path.dirname(path)
 from Test__init import get_posix_object
 from Testbase import TestPOSIXTool
-from common import XI_NAMESPACE, XI, inPy3k, call, builtins, u, can_skip, \
-    skip, skipIf, skipUnless, Bcfg2TestCase, DBModelTestCase, syncdb, \
-    patchIf, datastore
+from common import *
 
 class TestPOSIXDirectory(TestPOSIXTool):
     test_obj = POSIXDirectory
@@ -29,7 +27,7 @@ class TestPOSIXDirectory(TestPOSIXTool):
     @patch("Bcfg2.Client.Tools.POSIX.Directory.%s._exists" % test_obj.__name__)
     def test_verify(self, mock_exists, mock_verify, mock_listdir):
         entry = lxml.etree.Element("Path", name="/test", type="directory",
-                                   perms='0644', owner='root', group='root')
+                                   mode='0644', owner='root', group='root')
 
         mock_exists.return_value = False
         self.assertFalse(self.ptool.verify(entry, []))
@@ -96,7 +94,7 @@ class TestPOSIXDirectory(TestPOSIXTool):
     def test_install(self, mock_makedirs, mock_exists, mock_install,
                      mock_rmtree, mock_isdir, mock_unlink):
         entry = lxml.etree.Element("Path", name="/test/foo/bar",
-                                   type="directory", perms='0644',
+                                   type="directory", mode='0644',
                                    owner='root', group='root')
         
         def reset():

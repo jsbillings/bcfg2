@@ -1,0 +1,39 @@
+#!/usr/bin/env python
+""" Daemon that runs to collect logs from the LocalFilesystem
+Reporting transport object and add them to the Reporting storage
+backend """
+
+import sys
+import logging
+import Bcfg2.Logger
+import Bcfg2.Options
+from Bcfg2.Reporting.Collector import ReportingCollector, ReportingError
+
+
+def main():
+    logger = logging.getLogger('bcfg2-report-collector')
+    optinfo = dict(
+            daemon=Bcfg2.Options.DAEMON,
+            repo=Bcfg2.Options.SERVER_REPOSITORY,
+            filemonitor=Bcfg2.Options.SERVER_FILEMONITOR,
+            web_configfile=Bcfg2.Options.WEB_CFILE,
+        )
+    optinfo.update(Bcfg2.Options.CLI_COMMON_OPTIONS)
+    optinfo.update(Bcfg2.Options.REPORTING_COMMON_OPTIONS)
+    setup = Bcfg2.Options.OptionParser(optinfo)
+    setup.parse(sys.argv[1:])
+
+    # run collector
+    try:
+        collector = ReportingCollector(setup)
+        collector.run()
+    except ReportingError:
+        msg = sys.exc_info()[1]
+        logger.error(msg)
+        raise SystemExit(1)
+    except KeyboardInterrupt:
+        raise SystemExit(1)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

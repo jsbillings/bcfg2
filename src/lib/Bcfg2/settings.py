@@ -10,6 +10,13 @@ try:
 except ImportError:
     HAS_DJANGO = False
 
+# required for reporting
+try:
+    import south  # pylint: disable=W0611
+    HAS_SOUTH = True
+except ImportError:
+    HAS_SOUTH = False
+
 DATABASES = dict()
 
 # Django < 1.2 compat
@@ -101,7 +108,6 @@ def read_config(cfile=DEFAULT_CONFIG, repo=None, quiet=False):
     else:
         MEDIA_URL = '/site_media'
 
-
 # initialize settings from /etc/bcfg2-web.conf or /etc/bcfg2.conf, or
 # set up basic defaults.  this lets manage.py work in all cases
 read_config(quiet=True)
@@ -123,9 +129,13 @@ INSTALLED_APPS = (
     'django.contrib.sessions',
     'django.contrib.sites',
     'django.contrib.admin',
-    'Bcfg2.Server.Reports.reports',
-    'Bcfg2.Server'
+    'Bcfg2.Server',
 )
+if HAS_SOUTH:
+    INSTALLED_APPS = INSTALLED_APPS + (
+        'south',
+        'Bcfg2.Reporting',
+    )
 
 # Imported from Bcfg2.Server.Reports
 MEDIA_ROOT = ''
@@ -137,6 +147,15 @@ ADMIN_MEDIA_PREFIX = '/media/'
 #TODO - make this unique
 # Make this unique, and don't share it with anybody.
 SECRET_KEY = 'eb5+y%oy-qx*2+62vv=gtnnxg1yig_odu0se5$h0hh#pc*lmo7'
+
+if HAS_DJANGO and django.VERSION[0] == 1 and django.VERSION[1] < 3:
+    CACHE_BACKEND = 'locmem:///'
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        }
+    }
 
 if HAS_DJANGO and django.VERSION[0] == 1 and django.VERSION[1] < 2:
     TEMPLATE_LOADERS = (
@@ -158,7 +177,7 @@ MIDDLEWARE_CLASSES = (
 )
 
 # TODO - move this to a higher root and dynamically import
-ROOT_URLCONF = 'Bcfg2.Server.Reports.urls'
+ROOT_URLCONF = 'Bcfg2.Reporting.urls'
 
 # TODO - this isn't usable
 # Authentication Settings

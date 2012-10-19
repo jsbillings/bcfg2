@@ -41,16 +41,10 @@ except ImportError:
         HAS_JSON = False
 
 try:
-    import syck as yaml
-    import syck.error as YAMLError
+    import yaml
     HAS_YAML = True
 except ImportError:
-    try:
-        import yaml
-        from yaml import YAMLError
-        HAS_YAML = True
-    except ImportError:
-        HAS_YAML = False
+    HAS_YAML = False
 
 
 class ClientProbeDataSet(dict):
@@ -110,7 +104,7 @@ class ProbeData(str):
         if self._yaml is None and HAS_YAML:
             try:
                 self._yaml = yaml.load(self.data)
-            except YAMLError:
+            except yaml.YAMLError:
                 pass
         return self._yaml
 
@@ -140,7 +134,7 @@ class ProbeSet(Bcfg2.Server.Plugin.EntrySet):
         """ Get an XML description of all probes for a client suitable
         for sending to that client.
 
-        :params metadata: The client metadata to get probes for.
+        :param metadata: The client metadata to get probes for.
         :type metadata: Bcfg2.Server.Plugins.Metadata.ClientMetadata
         :returns: list of lxml.etree._Element objects, each of which
                   represents one probe.
@@ -181,7 +175,7 @@ class Probes(Bcfg2.Server.Plugin.Probing,
         Bcfg2.Server.Plugin.DatabaseBacked.__init__(self, core, datastore)
 
         try:
-            self.probes = ProbeSet(self.data, core.fam, core.encoding,
+            self.probes = ProbeSet(self.data, core.fam, core.setup['encoding'],
                                    self.name)
         except:
             err = sys.exc_info()[1]
@@ -203,9 +197,14 @@ class Probes(Bcfg2.Server.Plugin.Probing,
         """ Write received probe data to probed.xml """
         top = lxml.etree.Element("Probed")
         for client, probed in sorted(self.probedata.items()):
-            ctag = lxml.etree.SubElement(top, 'Client', name=client,
-                                         timestamp=str(int(probed.timestamp)))
-            for probe in sorted(probed):
+            # make a copy of probe data for this client in case it
+            # submits probe data while we're trying to write
+            # probed.xml
+            probedata = copy.copy(probed)
+            ctag = \
+                lxml.etree.SubElement(top, 'Client', name=client,
+                                      timestamp=str(int(probedata.timestamp)))
+            for probe in sorted(probedata):
                 lxml.etree.SubElement(ctag, 'Probe', name=probe,
                                       value=str(self.probedata[client][probe]))
             for group in sorted(self.cgroups[client]):
@@ -319,8 +318,8 @@ class Probes(Bcfg2.Server.Plugin.Probing,
         if data.text == None:
             self.logger.info("Got null response to probe %s from %s" %
                              (data.get('name'), client.hostname))
-            self.probedata[client.hostname].update({data.get('name'):
-                                                        ProbeData('')})
+            self.probedata[client.hostname][data.get('name')] = \
+                ProbeData('')
             return
         dlines = data.text.split('\n')
         self.logger.debug("%s:probe:%s:%s" %
@@ -333,7 +332,7 @@ class Probes(Bcfg2.Server.Plugin.Probing,
                     self.cgroups[client.hostname].append(newgroup)
                 dlines.remove(line)
         dobj = ProbeData("\n".join(dlines))
-        self.probedata[client.hostname].update({data.get('name'): dobj})
+        self.probedata[client.hostname][data.get('name')] = dobj
 
     def get_additional_groups(self, meta):
         return self.cgroups.get(meta.hostname, list())

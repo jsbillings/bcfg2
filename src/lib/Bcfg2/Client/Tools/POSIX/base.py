@@ -11,7 +11,7 @@ import Bcfg2.Client.XML
 
 try:
     import selinux
-    HAS_SELINUX = True
+    HAS_SELINUX = selinux.is_selinux_enabled()
 except ImportError:
     HAS_SELINUX = False
 
@@ -113,16 +113,16 @@ class POSIXTool(Bcfg2.Client.Tools.Tool):
                                   path)
                 rv = False
 
-        if entry.get("perms"):
-            wanted_perms = int(entry.get('perms'), 8)
+        if entry.get("mode"):
+            wanted_mode = int(entry.get('mode'), 8)
             if entry.get('dev_type'):
-                wanted_perms |= device_map[entry.get('dev_type')]
+                wanted_mode |= device_map[entry.get('dev_type')]
             try:
-                self.logger.debug("POSIX: Setting permissions on %s to %s" %
-                                  (path, oct(wanted_perms)))
-                os.chmod(path, wanted_perms)
+                self.logger.debug("POSIX: Setting mode on %s to %s" %
+                                  (path, oct(wanted_mode)))
+                os.chmod(path, wanted_mode)
             except (OSError, KeyError):
-                self.logger.error('POSIX: Failed to change permissions on %s' %
+                self.logger.error('POSIX: Failed to change mode on %s' %
                                   path)
                 rv = False
 
@@ -334,7 +334,9 @@ class POSIXTool(Bcfg2.Client.Tools.Tool):
         representing the permissions entailed by it.  representations can
         either be a single octal digit, a string of up to three 'r',
         'w', 'x', or '-' characters, or a posix1e.Permset object"""
-        if hasattr(perms, 'test'):
+        if perms is None:
+            return 0
+        elif hasattr(perms, 'test'):
             # Permset object
             return sum([p for p in ACL_MAP.values()
                         if perms.test(p)])
@@ -426,12 +428,12 @@ class POSIXTool(Bcfg2.Client.Tools.Tool):
             group = None
 
         try:
-            perms = oct(ondisk[stat.ST_MODE])[-4:]
+            mode = oct(ondisk[stat.ST_MODE])[-4:]
         except (OSError, KeyError, TypeError):
             err = sys.exc_info()[1]
             self.logger.debug("POSIX: Could not get current permissions of "
                               "%s: %s" % (path, err))
-            perms = None
+            mode = None
 
         if HAS_SELINUX:
             try:
@@ -448,17 +450,17 @@ class POSIXTool(Bcfg2.Client.Tools.Tool):
             acls = self._list_file_acls(path)
         else:
             acls = None
-        return (ondisk, owner, group, perms, secontext, acls)
+        return (ondisk, owner, group, mode, secontext, acls)
 
     def _verify_metadata(self, entry, path=None):  # pylint: disable=R0912
-        """ generic method to verify perms, owner, group, secontext, acls,
+        """ generic method to verify mode, owner, group, secontext, acls,
         and mtime """
         # allow setting an alternate path for recursive permissions checking
         if path is None:
             path = entry.get('name')
         attrib = dict()
         ondisk, attrib['current_owner'], attrib['current_group'], \
-            attrib['current_perms'], attrib['current_secontext'] = \
+            attrib['current_mode'], attrib['current_secontext'] = \
             self._gather_data(path)[0:5]
 
         if not ondisk:
@@ -473,17 +475,17 @@ class POSIXTool(Bcfg2.Client.Tools.Tool):
         # symlink and hardlink entries, which have SELinux contexts
         # but not other permissions, optional secontext and mtime
         # attrs, and so on.
-        wanted_owner, wanted_group, wanted_perms, mtime = None, None, None, -1
+        wanted_owner, wanted_group, wanted_mode, mtime = None, None, None, -1
         if entry.get('mtime', '-1') != '-1':
             mtime = str(ondisk[stat.ST_MTIME])
         if entry.get("owner"):
             wanted_owner = str(self._norm_entry_uid(entry))
         if entry.get("group"):
             wanted_group = str(self._norm_entry_gid(entry))
-        if entry.get("perms"):
-            while len(entry.get('perms', '')) < 4:
-                entry.set('perms', '0' + entry.get('perms', ''))
-            wanted_perms = int(entry.get('perms'), 8)
+        if entry.get("mode"):
+            while len(entry.get('mode', '')) < 4:
+                entry.set('mode', '0' + entry.get('mode', ''))
+            wanted_mode = int(entry.get('mode'), 8)
 
         errors = []
         if wanted_owner and attrib['current_owner'] != wanted_owner:
@@ -496,11 +498,11 @@ class POSIXTool(Bcfg2.Client.Tools.Tool):
                           "Current group is %s but should be %s" %
                           (path, attrib['current_group'], entry.get('group')))
 
-        if (wanted_perms and
-            oct(int(attrib['current_perms'], 8)) != oct(wanted_perms)):
+        if (wanted_mode and
+            oct(int(attrib['current_mode'], 8)) != oct(wanted_mode)):
             errors.append("Permissions for path %s are incorrect. "
                           "Current permissions are %s but should be %s" %
-                          (path, attrib['current_perms'], entry.get('perms')))
+                          (path, attrib['current_mode'], entry.get('mode')))
 
         if entry.get('mtime'):
             attrib['current_mtime'] = mtime
@@ -544,6 +546,10 @@ class POSIXTool(Bcfg2.Client.Tools.Tool):
             else:
                 self.logger.error("POSIX: Unknown ACL scope %s" %
                                   acl.get("scope"))
+                continue
+            if acl.get('perms') is None:
+                self.logger.error("POSIX: No permissions set for ACL: %s" %
+                                  Bcfg2.Client.XML.tostring(acl))
                 continue
             wanted[(acl.get("type"), scope, acl.get(acl.get("scope")))] = \
                 self._norm_acl_perms(acl.get('perms'))

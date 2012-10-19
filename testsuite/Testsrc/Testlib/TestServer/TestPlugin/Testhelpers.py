@@ -17,10 +17,10 @@ while path != '/':
     if os.path.basename(path) == "testsuite":
         break
     path = os.path.dirname(path)
-from common import XI_NAMESPACE, XI, call, builtins, skip, skipIf, \
-    skipUnless, Bcfg2TestCase, patchIf, datastore, inPy3k, can_skip, re_type
+from common import *
 from TestServer.TestPlugin.Testbase import TestPlugin, TestDebuggable
 from TestServer.TestPlugin.Testinterfaces import TestGenerator
+
 
 def tostring(el):
     return lxml.etree.tostring(el, xml_declaration=False).decode('UTF-8')
@@ -87,7 +87,7 @@ class TestDatabaseBacked(TestPlugin):
         core.setup.cfp.getboolean.return_value = False
         db = self.get_obj(core)
         self.assertFalse(db._use_db)
-        
+
         Bcfg2.Server.Plugin.helpers.HAS_DJANGO = False
         core = Mock()
         db = self.get_obj(core)
@@ -155,12 +155,13 @@ class TestDirectoryBacked(Bcfg2TestCase):
                     # such thing as a bad event
 
     def test_child_interface(self):
-        # ensure that the child object has the correct interface
+        """ ensure that the child object has the correct interface """
         self.assertTrue(hasattr(self.test_obj.__child__, "HandleEvent"))
 
     def get_obj(self, fam=None):
         if fam is None:
             fam = Mock()
+
         @patch("%s.%s.add_directory_monitor" % (self.test_obj.__module__,
                                                 self.test_obj.__name__),
                Mock())
@@ -410,7 +411,7 @@ class TestXMLFileBacked(TestFileBacked):
     def test_follow_xincludes(self, mock_parse, mock_exists):
         xfb = self.get_obj()
         xfb.add_monitor = Mock()
-        
+
         def reset():
             xfb.add_monitor.reset_mock()
             mock_parse.reset_mock()
@@ -1698,7 +1699,7 @@ class TestEntrySet(TestDebuggable):
             
             idata = ["owner:owner",
                      "group:             GROUP",
-                     "perms: 775",
+                     "mode: 775",
                      "important:     true",
                      "bogus: line"]
             mock_open.return_value.readlines.return_value = idata
@@ -1706,7 +1707,7 @@ class TestEntrySet(TestDebuggable):
             expected = DEFAULT_FILE_METADATA.copy()
             expected['owner'] = 'owner'
             expected['group'] = 'GROUP'
-            expected['perms'] = '0775'
+            expected['mode'] = '0775'
             expected['important'] = 'true'
             self.assertItemsEqual(eset.metadata,
                                   expected)
@@ -1763,6 +1764,15 @@ class TestGroupSpool(TestPlugin, TestGenerator):
     test_obj = GroupSpool
 
     def get_obj(self, core=None):
+        if core is None:
+            core = MagicMock()
+            core.setup = MagicMock()
+        else:
+            try:
+                core.setup['encoding']
+            except TypeError:
+                core.setup.__getitem__ = MagicMock()
+
         @patch("%s.%s.AddDirectoryMonitor" % (self.test_obj.__module__,
                                               self.test_obj.__name__),
                Mock())
@@ -1772,11 +1782,10 @@ class TestGroupSpool(TestPlugin, TestGenerator):
         return inner()
 
     def test__init(self):
-        core = Mock()
         @patch("%s.%s.AddDirectoryMonitor" % (self.test_obj.__module__,
                                               self.test_obj.__name__))
         def inner(mock_Add):
-            gs = self.test_obj(core, datastore)
+            gs = self.test_obj(MagicMock(), datastore)
             mock_Add.assert_called_with('')
             self.assertItemsEqual(gs.Entries, {gs.entry_type: {}})
 
@@ -1791,7 +1800,7 @@ class TestGroupSpool(TestPlugin, TestGenerator):
         gs.event_id = Mock()
         gs.event_path = Mock()
         gs.AddDirectoryMonitor = Mock()
-        
+
         def reset():
             gs.es_cls.reset_mock()
             gs.es_child_cls.reset_mock()

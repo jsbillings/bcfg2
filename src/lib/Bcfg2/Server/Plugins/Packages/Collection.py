@@ -93,7 +93,8 @@ class Collection(list, Bcfg2.Server.Plugin.Debuggable):
     #: Whether or not this Packages backend supports package groups
     __package_groups__ = False
 
-    def __init__(self, metadata, sources, basepath, debug=False):
+    def __init__(self, metadata, sources, cachepath, basepath, fam,
+                 debug=False):
         """
         :param metadata: The client metadata for this collection
         :type metadata: Bcfg2.Server.Plugins.Metadata.ClientMetadata
@@ -103,12 +104,20 @@ class Collection(list, Bcfg2.Server.Plugin.Debuggable):
         :type sources: list of
                        :class:`Bcfg2.Server.Plugins.Packages.Source.Source`
                        objects
-        :param basepath: The base filesystem path where cache and
-                         other temporary data will be stored
+        :param cachepath: The filesystem path where cache and other temporary
+                          data will be stored
+        :type cachepath: string
+        :param basepath: The filesystem path to the Packages plugin
+                         directory, where more permanent data can be
+                         stored
         :type basepath: string
+        :param fam: A file monitor object to use if this Collection
+                    needs to monitor for file activity
+        :type fam: Bcfg2.Server.FileMonitor.FileMonitor
         :param debug: Enable debugging output
         :type debug: bool
 
+        .. -----
         .. autoattribute:: __package_groups__
         """
         Bcfg2.Server.Plugin.Debuggable.__init__(self)
@@ -116,7 +125,9 @@ class Collection(list, Bcfg2.Server.Plugin.Debuggable):
         self.debug_flag = debug
         self.metadata = metadata
         self.basepath = basepath
+        self.cachepath = cachepath
         self.virt_pkgs = dict()
+        self.fam = fam
 
         try:
             self.setup = sources[0].setup
@@ -218,6 +229,7 @@ class Collection(list, Bcfg2.Server.Plugin.Debuggable):
             cachefiles.add(source.cachefile)
         return list(cachefiles)
 
+    @Bcfg2.Server.Plugin.track_statistics()
     def get_groups(self, grouplist):
         """ Given a list of package group names, return a dict of
         ``<group name>: <list of packages>``.  This method is provided
@@ -238,6 +250,7 @@ class Collection(list, Bcfg2.Server.Plugin.Debuggable):
             rv[group] = self.get_group(group, ptype)
         return rv
 
+    @Bcfg2.Server.Plugin.track_statistics()
     def get_group(self, group, ptype=None):
         """ Get the list of packages of the given type in a package
         group.
@@ -486,6 +499,7 @@ class Collection(list, Bcfg2.Server.Plugin.Debuggable):
         """
         return list(complete.difference(initial))
 
+    @Bcfg2.Server.Plugin.track_statistics()
     def complete(self, packagelist):  # pylint: disable=R0912,R0914
         """ Build a complete list of all packages and their dependencies.
 

@@ -1,7 +1,9 @@
-""" the core of the CherryPy-powered server """
+""" The core of the `CherryPy <http://www.cherrypy.org/>`_-powered
+server. """
 
 import sys
 import time
+import Bcfg2.Statistics
 from Bcfg2.Compat import urlparse, xmlrpclib, b64decode
 from Bcfg2.Server.Core import BaseCore
 import cherrypy
@@ -11,10 +13,12 @@ from cherrypy.process.plugins import Daemonizer, DropPrivileges, PIDFile
 
 
 def on_error(*args, **kwargs):  # pylint: disable=W0613
-    """ define our own error handler that handles xmlrpclib.Fault
+    """ CherryPy error handler that handles :class:`xmlrpclib.Fault`
     objects and so allows for the possibility of returning proper
-    error codes. this obviates the need to use the builtin CherryPy
-    xmlrpc tool """
+    error codes. This obviates the need to use
+    :func:`cherrypy.lib.xmlrpc.on_error`, the builtin CherryPy xmlrpc
+    tool, which does not handle xmlrpclib.Fault objects and returns
+    the same error code for every error."""
     err = sys.exc_info()[1]
     if not isinstance(err, xmlrpclib.Fault):
         err = xmlrpclib.Fault(xmlrpclib.INTERNAL_ERROR, str(err))
@@ -24,8 +28,11 @@ cherrypy.tools.xmlrpc_error = ErrorTool(on_error)
 
 
 class Core(BaseCore):
-    """ The CherryPy-based server core """
+    """ The CherryPy-based server core. """
 
+    #: Base CherryPy config for this class.  We enable the
+    #: ``xmlrpc_error`` tool created from :func:`on_error` and the
+    #: ``bcfg2_authn`` tool created from :func:`do_authn`.
     _cp_config = {'tools.xmlrpc_error.on': True,
                   'tools.bcfg2_authn.on': True}
 
@@ -35,11 +42,15 @@ class Core(BaseCore):
         cherrypy.tools.bcfg2_authn = cherrypy.Tool('on_start_resource',
                                                    self.do_authn)
 
+        #: List of exposed plugin RMI
         self.rmi = self._get_rmi()
         cherrypy.engine.subscribe('stop', self.shutdown)
+    __init__.__doc__ = BaseCore.__init__.__doc__.split('.. -----')[0]
 
     def do_authn(self):
-        """ perform authentication """
+        """ Perform authentication by calling
+        :func:`Bcfg2.Server.Core.BaseCore.authenticate`. This is
+        implemented as a CherryPy tool."""
         try:
             header = cherrypy.request.headers['Authorization']
         except KeyError:
@@ -63,10 +74,11 @@ class Core(BaseCore):
 
     @cherrypy.expose
     def default(self, *args, **params):  # pylint: disable=W0613
-        """ needed to make enough changes to the stock
-        XMLRPCController to support plugin.__rmi__ and prepending
-        client address that we just rewrote.  it clearly wasn't
-        written with inheritance in mind :( """
+        """ Handle all XML-RPC calls.  It was necessary to make enough
+        changes to the stock CherryPy
+        :class:`cherrypy._cptools.XMLRPCController` to support plugin
+        RMI and prepending the client address that we just rewrote it.
+        It clearly wasn't written with inheritance in mind."""
         rpcparams, rpcmethod = xmlrpcutil.process_body()
         if rpcmethod == 'ERRORMETHOD':
             raise Exception("Unknown error processing XML-RPC request body")
@@ -88,18 +100,25 @@ class Core(BaseCore):
         try:
             body = handler(*rpcparams, **params)
         finally:
-            self.stats.add_value(rpcmethod, time.time() - method_start)
+            Bcfg2.Statistics.stats.add_value(rpcmethod,
+                                             time.time() - method_start)
 
         xmlrpcutil.respond(body, 'utf-8', True)
         return cherrypy.serving.response.body
 
     def _daemonize(self):
+        """ Drop privileges with
+        :class:`cherrypy.process.plugins.DropPrivileges`, daemonize
+        with :class:`cherrypy.process.plugins.Daemonizer`, and write a
+        PID file with :class:`cherrypy.process.plugins.PIDFile`. """
         DropPrivileges(cherrypy.engine, uid=self.setup['daemon_uid'],
                        gid=self.setup['daemon_gid']).subscribe()
         Daemonizer(cherrypy.engine).subscribe()
         PIDFile(cherrypy.engine, self.setup['daemon']).subscribe()
+        return True
 
     def _run(self):
+        """ Start the server listening. """
         hostname, port = urlparse(self.setup['location'])[1].split(':')
         if self.setup['listen_all']:
             hostname = '0.0.0.0'
@@ -116,6 +135,12 @@ class Core(BaseCore):
         cherrypy.config.update(config)
         cherrypy.tree.mount(self, '/', {'/': self.setup})
         cherrypy.engine.start()
+        return True
 
     def _block(self):
+        """ Enter the blocking infinite server
+        loop. :func:`Bcfg2.Server.Core.BaseCore.shutdown` is called on
+        exit by a :meth:`subscription
+        <cherrypy.process.wspbus.Bus.subscribe>` on the top-level
+        CherryPy engine."""
         cherrypy.engine.block()

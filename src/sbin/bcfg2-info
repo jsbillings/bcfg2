@@ -7,6 +7,7 @@ import sys
 import cmd
 import getopt
 import fnmatch
+import logging
 import lxml.etree
 import traceback
 from code import InteractiveConsole
@@ -122,11 +123,7 @@ class InfoCore(cmd.Cmd, Bcfg2.Server.Core.BaseCore):
     """Main class for bcfg2-info."""
     def __init__(self, setup):
         cmd.Cmd.__init__(self)
-        saved = (setup['syslog'], setup['logging'])
-        setup['syslog'] = False
-        setup['logging'] = None
         Bcfg2.Server.Core.BaseCore.__init__(self, setup=setup)
-        setup['syslog'], setup['logging'] = saved
         self.prompt = '> '
         self.cont = True
         self.fam.handle_events_in_interval(4)
@@ -212,8 +209,7 @@ class InfoCore(cmd.Cmd, Bcfg2.Server.Core.BaseCore):
 
     def do_quit(self, _):
         """ quit|exit - Exit program """
-        for plugin in list(self.plugins.values()):
-            plugin.shutdown()
+        self.shutdown()
         os._exit(0)  # pylint: disable=W0212
 
     do_EOF = do_quit
@@ -497,6 +493,42 @@ Bcfg2 client itself.""")
                 ]
         print_tabular(output)
 
+    def do_probes(self, args):
+        """ probes [-p] <hostname> - Get probe list for the given
+        host, in XML (the default) or human-readable pretty (with -p)
+        format"""
+        alist = args.split()
+        pretty = False
+        if '-p' in alist:
+            pretty = True
+            alist.remove('-p')
+        if len(alist) != 1:
+            print 'alist=%s' % alist
+            print(self._get_usage(self.do_probes))
+            return
+        hostname = alist[0]
+        if pretty:
+            probes = []
+        else:
+            probes = lxml.etree.Element('probes')
+        metadata = self.build_metadata(hostname)
+        for plugin in self.plugins_by_type(Bcfg2.Server.Plugin.Probing):
+            for probe in plugin.GetProbes(metadata):
+                probes.append(probe)
+        if pretty:
+            for probe in probes:
+                pname = probe.get("name")
+                print("=" * (len(pname) + 2))
+                print(" %s" % pname)
+                print("=" * (len(pname) + 2))
+                print("")
+                print(probe.text)
+                print("")
+        else:
+            print(lxml.etree.tostring(probes,
+                                      xml_declaration=False,
+                                      pretty_print=True).decode('UTF-8'))
+
     def do_showentries(self, args):
         """ showentries <hostname> <type> - Show abstract
         configuration entries for a given host """
@@ -652,6 +684,28 @@ Bcfg2 client itself.""")
         collection = self.plugins['Packages'].get_collection(metadata)
         print(collection.sourcelist())
 
+    def do_query(self, args):
+        """ query <-g group|-p profile|-b bundle> - Query clients """
+        if len(args) == 0:
+            print("\n".join(self.metadata.clients))
+            return
+        arglist = args.split(" ")
+        if len(arglist) != 2:
+            print(self._get_usage(self.do_query))
+            return
+
+        qtype, qparam = arglist
+        if qtype == '-p':
+            res = self.metadata.get_client_names_by_profiles(qparam.split(','))
+        elif qtype == '-g':
+            res = self.metadata.get_client_names_by_groups(qparam.split(','))
+        elif qtype == '-b':
+            res = self.metadata.get_client_names_by_bundles(qparam.split(','))
+        else:
+            print(self._get_usage(self.do_query))
+            return
+        print("\n".join(res))
+
     def do_profile(self, arg):
         """ profile <command> <args> - Profile a single bcfg2-info
         command """
@@ -666,17 +720,20 @@ Bcfg2 client itself.""")
         display_trace(prof)
 
     def run(self, args):  # pylint: disable=W0221
-        if args:
-            self.onecmd(" ".join(args))
-        else:
-            self.do_loop()
+        try:
+            if args:
+                self.onecmd(" ".join(args))
+            else:
+                self.do_loop()
+        finally:
+            self.shutdown()
 
     def _daemonize(self):
         pass
 
     def _run(self):
         pass
-    
+
     def _block(self):
         pass
                 
@@ -712,6 +769,15 @@ def main():
                           USAGE])
 
     setup.parse(sys.argv[1:])
+
+    if setup['debug']:
+        level = logging.DEBUG
+    elif setup['verbose']:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
+    Bcfg2.Logger.setup_logging('bcfg2-info', to_syslog=False, level=level)
+
     if setup['args'] and setup['args'][0] == 'help':
         print(setup.hm)
         sys.exit(0)

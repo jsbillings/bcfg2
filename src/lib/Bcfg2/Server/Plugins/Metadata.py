@@ -419,7 +419,7 @@ class Metadata(Bcfg2.Server.Plugin.Metadata,
         self.session_cache = {}
         self.default = None
         self.pdirty = False
-        self.password = core.password
+        self.password = core.setup['password']
         self.query = MetadataQuery(core.build_metadata,
                                    lambda: list(self.clients),
                                    self.get_client_names_by_groups,
@@ -1070,7 +1070,7 @@ class Metadata(Bcfg2.Server.Plugin.Metadata,
         """ return a list of names of clients in the given profile groups """
         rv = []
         for client in list(self.clients):
-            mdata = self.get_initial_metadata(client)
+            mdata = self.core.build_metadata(client)
             if mdata.profile in profiles:
                 rv.append(client)
         return rv
@@ -1226,6 +1226,7 @@ class Metadata(Bcfg2.Server.Plugin.Metadata,
 
     def viz(self, hosts, bundles, key, only_client, colors):
         """Admin mode viz support."""
+        clientmeta = None
         if only_client:
             clientmeta = self.core.build_metadata(only_client)
 
@@ -1233,9 +1234,11 @@ class Metadata(Bcfg2.Server.Plugin.Metadata,
         categories = {'default': 'grey83'}
         viz_str = []
         egroups = groups.findall("Group") + groups.findall('.//Groups/Group')
+        color = 0
         for group in egroups:
             if not group.get('category') in categories:
-                categories[group.get('category')] = colors.pop()
+                categories[group.get('category')] = colors[color]
+                color = (color + 1) % len(colors)
             group.set('color', categories[group.get('category')])
         if None in categories:
             del categories[None]
@@ -1332,6 +1335,7 @@ class Metadata(Bcfg2.Server.Plugin.Metadata,
                 if include_group(group.get('name')):
                     rv.append('"group-%s" -> "group-%s";' %
                               (group.get('name'), parent.get('name')))
+        return rv
 
 
 class MetadataLint(Bcfg2.Server.Lint.ServerPlugin):
@@ -1341,13 +1345,19 @@ class MetadataLint(Bcfg2.Server.Lint.ServerPlugin):
         self.nested_clients()
         self.deprecated_options()
         self.bogus_profiles()
+        self.duplicate_groups()
+        self.duplicate_default_groups()
+        self.duplicate_clients()
 
     @classmethod
     def Errors(cls):
         return {"nested-client-tags": "warning",
                 "deprecated-clients-options": "warning",
                 "nonexistent-profile-group": "error",
-                "non-profile-set-as-profile": "error"}
+                "non-profile-set-as-profile": "error",
+                "duplicate-group": "error",
+                "duplicate-client": "error",
+                "multiple-default-groups": "error"}
 
     def deprecated_options(self):
         """ check for the location='floating' option, which has been
@@ -1390,3 +1400,50 @@ class MetadataLint(Bcfg2.Server.Lint.ServerPlugin):
                                "profile group:\n%s" %
                                (profile, client.get("name"), profile,
                                 self.RenderXML(client)))
+
+    def duplicate_groups(self):
+        """ check for groups that are defined twice.  We count a group
+        tag as a definition if it a) has profile or public set; or b)
+        has any children. """
+        self.duplicate_entries(
+            self.metadata.groups_xml.xdata.xpath("//Groups/Group") + \
+                self.metadata.groups_xml.xdata.xpath("//Groups/Group//Group"),
+            "group",
+            include=lambda g: (g.get("profile") or
+                               g.get("public") or
+                               g.getchildren()))
+
+    def duplicate_default_groups(self):
+        """ check for multiple default groups """
+        defaults = []
+        for grp in self.metadata.groups_xml.xdata.xpath("//Groups/Group") + \
+                self.metadata.groups_xml.xdata.xpath("//Groups/Group//Group"):
+            if grp.get("default"):
+                defaults.append(self.RenderXML(grp))
+        if len(defaults) > 1:
+            self.LintError("multiple-default-groups",
+                           "Multiple default groups defined:\n%s" %
+                           "\n".join(defaults))
+
+    def duplicate_clients(self):
+        """ check for clients that are defined twice. """
+        self.duplicate_entries(
+            self.metadata.clients_xml.xdata.xpath("//Client"),
+            "client")
+
+    def duplicate_entries(self, allentries, etype, include=None):
+        """ generic duplicate entry finder """
+        if include is None:
+            include = lambda e: True
+        entries = dict()
+        for el in allentries:
+            if include(el):
+                if el.get("name") in entries:
+                    entries[el.get("name")].append(self.RenderXML(el))
+                else:
+                    entries[el.get("name")] = [self.RenderXML(el)]
+        for ename, els in entries.items():
+            if len(els) > 1:
+                self.LintError("duplicate-%s" % etype,
+                               "%s %s is defined multiple times:\n%s" %
+                               (etype.title(), ename, "\n".join(els)))
