@@ -663,6 +663,10 @@ class YUM(Bcfg2.Client.Tools.PkgTool):
                         continue
                     elif 'no' + prob.type in verify_flags:
                         continue
+                    if prob.type in ['checksum','size','mode', 'user','group','mtime'] and 'configuration' in prob.file_types:
+                        self.logger.debug(
+                            "  %s is a configuration file, skipping (%s)" % (fname,prob.type))
+                        continue
                     if prob.type not in ['missingok', 'ghost']:
                         tmp.append((prob.type, prob.message))
                 if tmp != []:
